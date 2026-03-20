@@ -1,0 +1,542 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── Supabase Config ───
+const SUPABASE_URL = "https://uhfuskvhwuxphwslkeiw.supabase.co";
+const SUPABASE_KEY = "sb_publishable_dTdyyGORoiDZlN_w6aWJ7Q_cKvrfwEi";
+
+// ─── Lightweight Supabase REST Client ───
+const supabase = {
+  auth: {
+    _session: null,
+    _listeners: [],
+
+    onAuthStateChange(callback) {
+      this._listeners.push(callback);
+      this._restoreSession().then((session) => {
+        if (session) callback("SIGNED_IN", session);
+        else callback("SIGNED_OUT", null);
+      });
+      return { data: { subscription: { unsubscribe: () => {} } } };
+    },
+
+    async _restoreSession() {
+      const hash = window.location.hash;
+      if (hash && hash.includes("access_token")) {
+        const params = new URLSearchParams(hash.substring(1));
+        const accessToken = params.get("access_token");
+        const refreshToken = params.get("refresh_token");
+        const expiresIn = params.get("expires_in");
+        if (accessToken) {
+          const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+            headers: { Authorization: `Bearer ${accessToken}`, apikey: SUPABASE_KEY },
+          });
+          if (userRes.ok) {
+            const user = await userRes.json();
+            const session = { access_token: accessToken, refresh_token: refreshToken, expires_at: Math.floor(Date.now() / 1000) + parseInt(expiresIn || "3600"), user };
+            this._session = session;
+            try { sessionStorage.setItem("forge-session", JSON.stringify(session)); } catch (e) {}
+            window.history.replaceState(null, "", window.location.pathname);
+            return session;
+          }
+        }
+      }
+      try {
+        const stored = sessionStorage.getItem("forge-session");
+        if (stored) {
+          const session = JSON.parse(stored);
+          if (session.expires_at && session.expires_at > Date.now() / 1000 + 60) {
+            this._session = session;
+            return session;
+          } else if (session.refresh_token) {
+            return await this._refreshSession(session.refresh_token);
+          }
+          sessionStorage.removeItem("forge-session");
+        }
+      } catch (e) {}
+      return null;
+    },
+
+    async _refreshSession(refreshToken) {
+      try {
+        const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", apikey: SUPABASE_KEY },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const session = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Math.floor(Date.now() / 1000) + (data.expires_in || 3600), user: data.user };
+          this._session = session;
+          try { sessionStorage.setItem("forge-session", JSON.stringify(session)); } catch (e) {}
+          return session;
+        }
+      } catch (e) {}
+      return null;
+    },
+
+    async signInWithOAuth({ provider }) {
+      const redirectTo = window.location.origin + window.location.pathname;
+      window.location.href = `${SUPABASE_URL}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectTo)}`;
+    },
+
+    async signOut() {
+      if (this._session?.access_token) {
+        try { await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: "POST", headers: { Authorization: `Bearer ${this._session.access_token}`, apikey: SUPABASE_KEY } }); } catch (e) {}
+      }
+      this._session = null;
+      try { sessionStorage.removeItem("forge-session"); } catch (e) {}
+      this._listeners.forEach((cb) => cb("SIGNED_OUT", null));
+    },
+  },
+
+  from(table) {
+    const token = this.auth._session?.access_token;
+    const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: "return=representation" };
+
+    return {
+      async select() {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=*&order=created_at.asc`, { headers });
+        if (!res.ok) throw new Error(`Select failed: ${res.status}`);
+        return { data: await res.json(), error: null };
+      },
+      async upsert(rows) {
+        const h = { ...headers, Prefer: "return=representation,resolution=merge-duplicates" };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, { method: "POST", headers: h, body: JSON.stringify(Array.isArray(rows) ? rows : [rows]) });
+        if (!res.ok) throw new Error(`Upsert failed: ${res.status} ${await res.text()}`);
+        return { data: await res.json(), error: null };
+      },
+      delete() {
+        let filters = [];
+        return {
+          eq(col, val) { filters.push(`${col}=eq.${encodeURIComponent(val)}`); return this; },
+          async execute() {
+            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filters.join("&")}`, { method: "DELETE", headers });
+            if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
+            return { error: null };
+          },
+        };
+      },
+    };
+  },
+};
+
+// ─── Constants ───
+const STAGES = [
+  { id: "spark", label: "Spark", emoji: "💡", description: "Raw ideas & brain nuggets", color: "#f59e0b" },
+  { id: "shaping", label: "Shaping", emoji: "🔬", description: "Fleshing it out", color: "#8b5cf6" },
+  { id: "planned", label: "Planned", emoji: "📐", description: "Ready to build", color: "#3b82f6" },
+  { id: "building", label: "Building", emoji: "🔨", description: "Actively working", color: "#10b981" },
+  { id: "paused", label: "Paused", emoji: "⏸️", description: "On the shelf", color: "#6b7280" },
+  { id: "done", label: "Done", emoji: "✅", description: "Shipped it", color: "#06b6d4" },
+];
+
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+function dbToProject(row) {
+  return { id: row.id, name: row.name, description: row.description || "", stage: row.stage, notes: row.notes || "", tasks: typeof row.tasks === "string" ? JSON.parse(row.tasks) : (row.tasks || []), createdAt: row.created_at, lastTouchedAt: row.last_touched_at };
+}
+
+function projectToDb(p) {
+  return { id: p.id, name: p.name, description: p.description || "", stage: p.stage, notes: p.notes || "", tasks: JSON.stringify(p.tasks || []), created_at: p.createdAt, last_touched_at: p.lastTouchedAt };
+}
+
+// ─── Login Screen ───
+function LoginScreen() {
+  const [loading, setLoading] = useState(false);
+  return (
+    <div style={{ background: "#111114", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+      <div style={{ textAlign: "center", padding: "40px" }}>
+        <div style={{ fontSize: "56px", marginBottom: "16px" }}>🔥</div>
+        <h1 style={{ fontSize: "36px", fontWeight: "700", fontFamily: "'Space Grotesk', sans-serif", color: "#f59e0b", margin: "0 0 8px", letterSpacing: "-1px" }}>THE FORGE</h1>
+        <p style={{ color: "#555", fontSize: "14px", letterSpacing: "3px", textTransform: "uppercase", margin: "0 0 40px" }}>idea → execution</p>
+        <p style={{ color: "#888", fontSize: "15px", maxWidth: "360px", margin: "0 auto 32px", lineHeight: "1.6" }}>Your personal command center for turning ideas into reality.</p>
+        <button onClick={() => { setLoading(true); supabase.auth.signInWithOAuth({ provider: "google" }); }} disabled={loading}
+          style={{ display: "inline-flex", alignItems: "center", gap: "12px", background: "#fff", border: "none", borderRadius: "10px", padding: "14px 32px", fontSize: "15px", fontWeight: "600", color: "#333", cursor: loading ? "wait" : "pointer", opacity: loading ? 0.7 : 1, boxShadow: "0 2px 12px rgba(0,0,0,0.3)" }}>
+          <svg width="20" height="20" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+          {loading ? "Redirecting…" : "Sign in with Google"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Focus Stats ───
+function FocusStats({ projects }) {
+  const active = projects.filter((p) => p.stage === "building");
+  const totalTasks = projects.reduce((s, p) => s + p.tasks.length, 0);
+  const doneTasks = projects.reduce((s, p) => s + p.tasks.filter((t) => t.done).length, 0);
+  const rate = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+  const stale = projects.filter((p) => p.stage !== "done" && p.stage !== "paused" && (Date.now() - p.lastTouchedAt) / 86400000 > 7);
+  const weekDone = projects.reduce((s, p) => s + p.tasks.filter((t) => t.done && t.completedAt && Date.now() - t.completedAt < 7 * 86400000).length, 0);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", marginBottom: "28px" }}>
+      {[
+        { label: "Active Projects", value: active.length, sub: active.length > 3 ? "⚠️ Consider focusing" : "Looking good", accent: active.length > 3 ? "#f59e0b" : "#10b981" },
+        { label: "Task Completion", value: `${rate}%`, sub: `${doneTasks}/${totalTasks} tasks`, accent: rate > 60 ? "#10b981" : rate > 30 ? "#f59e0b" : "#ef4444" },
+        { label: "Done This Week", value: weekDone, sub: weekDone > 0 ? "Keep it up!" : "Let's get moving", accent: weekDone > 0 ? "#10b981" : "#6b7280" },
+        { label: "Going Stale", value: stale.length, sub: stale.length > 0 ? stale[0]?.name?.slice(0, 20) : "All fresh", accent: stale.length > 0 ? "#ef4444" : "#10b981" },
+      ].map((s) => (
+        <div key={s.label} style={{ background: "rgba(255,255,255,0.04)", borderRadius: "12px", padding: "16px", borderLeft: `3px solid ${s.accent}` }}>
+          <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#888", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>{s.label}</div>
+          <div style={{ fontSize: "28px", fontWeight: "700", color: "#f0f0f0", fontFamily: "'Space Grotesk', sans-serif" }}>{s.value}</div>
+          <div style={{ fontSize: "12px", color: s.accent, marginTop: "4px" }}>{s.sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Project Card ───
+function ProjectCard({ project, onSelect, isDragging }) {
+  const done = project.tasks.filter((t) => t.done).length;
+  const total = project.tasks.length;
+  const pct = total > 0 ? (done / total) * 100 : 0;
+  const days = Math.floor((Date.now() - project.lastTouchedAt) / 86400000);
+  const stg = STAGES.find((s) => s.id === project.stage);
+
+  return (
+    <div draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", project.id)} onClick={() => onSelect(project)}
+      style={{ background: isDragging ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "14px", marginBottom: "8px", cursor: "grab", transition: "all 0.2s ease", opacity: isDragging ? 0.5 : 1 }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.07)"; e.currentTarget.style.borderColor = stg?.color || "#555"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}>
+      <div style={{ fontWeight: "600", fontSize: "14px", color: "#e8e8e8", marginBottom: "6px", lineHeight: "1.3" }}>{project.name}</div>
+      {project.description && <div style={{ fontSize: "12px", color: "#777", marginBottom: "8px", lineHeight: "1.4" }}>{project.description.length > 80 ? project.description.slice(0, 80) + "…" : project.description}</div>}
+      {total > 0 && (
+        <div style={{ marginBottom: "8px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#666", marginBottom: "4px" }}><span>{done}/{total} tasks</span><span>{Math.round(pct)}%</span></div>
+          <div style={{ height: "3px", background: "rgba(255,255,255,0.08)", borderRadius: "2px", overflow: "hidden" }}><div style={{ height: "100%", width: `${pct}%`, background: stg?.color || "#888", borderRadius: "2px", transition: "width 0.3s ease" }} /></div>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: "11px", color: days > 7 ? "#ef4444" : days > 3 ? "#f59e0b" : "#666" }}>{days === 0 ? "Today" : days === 1 ? "Yesterday" : `${days}d ago`}</span>
+        {total > 0 && done === total && <span style={{ fontSize: "11px", color: "#10b981" }}>Complete</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─── Pipeline Column ───
+function PipelineColumn({ stage, projects, onSelect, onDrop, draggingId }) {
+  const [dragOver, setDragOver] = useState(false);
+  return (
+    <div onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => { e.preventDefault(); setDragOver(false); onDrop(e.dataTransfer.getData("text/plain"), stage.id); }}
+      style={{ minWidth: "260px", maxWidth: "300px", flex: "1 0 260px", background: dragOver ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.015)", borderRadius: "14px", padding: "16px", border: dragOver ? `1px solid ${stage.color}44` : "1px solid transparent", transition: "all 0.2s ease", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+        <span style={{ fontSize: "18px" }}>{stage.emoji}</span>
+        <div>
+          <div style={{ fontWeight: "700", fontSize: "13px", color: stage.color, textTransform: "uppercase", letterSpacing: "0.5px" }}>{stage.label}</div>
+          <div style={{ fontSize: "11px", color: "#555" }}>{stage.description}</div>
+        </div>
+        <span style={{ marginLeft: "auto", background: `${stage.color}22`, color: stage.color, fontSize: "12px", fontWeight: "700", padding: "2px 8px", borderRadius: "10px" }}>{projects.length}</span>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", minHeight: "100px" }}>
+        {projects.map((p) => <ProjectCard key={p.id} project={p} onSelect={onSelect} isDragging={draggingId === p.id} />)}
+        {projects.length === 0 && <div style={{ textAlign: "center", padding: "24px 12px", color: "#444", fontSize: "13px", fontStyle: "italic" }}>Drag projects here</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── Project Detail Modal ───
+function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
+  const [name, setName] = useState(project.name);
+  const [description, setDescription] = useState(project.description || "");
+  const [notes, setNotes] = useState(project.notes || "");
+  const [newTask, setNewTask] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const stg = STAGES.find((s) => s.id === project.stage);
+  const timer = useRef(null);
+
+  const debounced = (updates) => { clearTimeout(timer.current); timer.current = setTimeout(() => onUpdate({ ...project, ...updates, lastTouchedAt: Date.now() }), 600); };
+
+  const addTask = () => { if (!newTask.trim()) return; const t = { id: generateId(), text: newTask.trim(), done: false, createdAt: Date.now() }; onUpdate({ ...project, tasks: [...project.tasks, t], lastTouchedAt: Date.now() }); setNewTask(""); };
+  const toggleTask = (tid) => { const u = project.tasks.map((t) => t.id === tid ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t); onUpdate({ ...project, tasks: u, lastTouchedAt: Date.now() }); };
+  const delTask = (tid) => onUpdate({ ...project, tasks: project.tasks.filter((t) => t.id !== tid), lastTouchedAt: Date.now() });
+  const saveName = () => { if (name.trim()) onUpdate({ ...project, name: name.trim(), lastTouchedAt: Date.now() }); setEditingName(false); };
+
+  const doneT = project.tasks.filter((t) => t.done).length;
+  const totalT = project.tasks.length;
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", paddingTop: "5vh", zIndex: 1000, overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", width: "100%", maxWidth: "640px", margin: "0 16px 40px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
+        <div style={{ padding: "24px 24px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
+            {editingName ? (
+              <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onBlur={saveName} onKeyDown={(e) => e.key === "Enter" && saveName()}
+                style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "8px", color: "#f0f0f0", fontSize: "20px", fontWeight: "700", padding: "6px 10px", flex: 1, marginRight: "12px", outline: "none" }} />
+            ) : (
+              <h2 onClick={() => setEditingName(true)} style={{ fontSize: "20px", fontWeight: "700", color: "#f0f0f0", margin: 0, cursor: "pointer", flex: 1 }}>{project.name}</h2>
+            )}
+            <button onClick={onClose} style={{ background: "none", border: "none", color: "#666", fontSize: "24px", cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ background: `${stg.color}22`, color: stg.color, fontSize: "12px", fontWeight: "600", padding: "4px 12px", borderRadius: "20px" }}>{stg.emoji} {stg.label}</span>
+            {totalT > 0 && <span style={{ fontSize: "12px", color: "#777" }}>{doneT}/{totalT} tasks done ({Math.round((doneT / totalT) * 100)}%)</span>}
+          </div>
+        </div>
+
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ marginBottom: "20px" }}>
+            <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "6px" }}>Description</label>
+            <textarea value={description} onChange={(e) => { setDescription(e.target.value); debounced({ description: e.target.value }); }} placeholder="What is this project about?" rows={2}
+              style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "14px", padding: "10px 12px", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+          </div>
+
+          <div style={{ marginBottom: "20px" }}>
+            <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "10px" }}>Tasks & Steps</label>
+            {project.tasks.map((task) => (
+              <div key={task.id} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                <button onClick={() => toggleTask(task.id)}
+                  style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "6px", border: task.done ? "none" : "2px solid rgba(255,255,255,0.2)", background: task.done ? stg.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: "12px", marginTop: "1px" }}>
+                  {task.done && "✓"}
+                </button>
+                <span style={{ flex: 1, fontSize: "14px", color: task.done ? "#555" : "#ccc", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4" }}>{task.text}</span>
+                <button onClick={() => delTask(task.id)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1 }}
+                  onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+              <input value={newTask} onChange={(e) => setNewTask(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} placeholder="Add a task or next step…"
+                style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "14px", padding: "10px 12px", outline: "none" }} />
+              <button onClick={addTask} style={{ background: stg.color, border: "none", borderRadius: "8px", color: "#fff", padding: "10px 16px", fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>Add</button>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: "20px" }}>
+            <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "6px" }}>Notes</label>
+            <textarea value={notes} onChange={(e) => { setNotes(e.target.value); debounced({ notes: e.target.value }); }} placeholder="Thoughts, links, context…" rows={3}
+              style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "14px", padding: "10px 12px", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+          </div>
+
+          <div style={{ marginBottom: "20px" }}>
+            <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Move to Stage</label>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {STAGES.map((s) => (
+                <button key={s.id} onClick={() => onUpdate({ ...project, stage: s.id, lastTouchedAt: Date.now() })}
+                  style={{ background: project.stage === s.id ? `${s.color}33` : "rgba(255,255,255,0.04)", border: project.stage === s.id ? `1px solid ${s.color}` : "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: project.stage === s.id ? s.color : "#888", fontSize: "12px", padding: "6px 12px", cursor: "pointer", fontWeight: project.stage === s.id ? "600" : "400" }}>
+                  {s.emoji} {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "16px", display: "flex", justifyContent: "flex-end" }}>
+            <button onClick={() => { if (confirm("Delete this project? This can't be undone.")) { onDelete(project.id); onClose(); } }}
+              style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", color: "#ef4444", fontSize: "13px", padding: "8px 16px", cursor: "pointer" }}>
+              Delete Project
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── New Project Form ───
+function NewProjectForm({ onAdd, onCancel }) {
+  const [name, setName] = useState("");
+  const [stage, setStage] = useState("spark");
+  const [desc, setDesc] = useState("");
+  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks: [], notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
+
+  return (
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "460px", margin: "0 16px", border: "1px solid rgba(255,255,255,0.1)" }}>
+        <h3 style={{ margin: "0 0 20px", fontSize: "18px", color: "#f0f0f0", fontWeight: "700" }}>New Project</h3>
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" onKeyDown={(e) => e.key === "Enter" && create()}
+          style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f0f0f0", fontSize: "16px", padding: "12px 14px", outline: "none", marginBottom: "12px", boxSizing: "border-box" }} />
+        <textarea value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Brief description (optional)" rows={2}
+          style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", color: "#ccc", fontSize: "14px", padding: "10px 14px", outline: "none", resize: "none", marginBottom: "16px", fontFamily: "inherit", boxSizing: "border-box" }} />
+        <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Starting Stage</label>
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "20px" }}>
+          {STAGES.filter((s) => s.id !== "done").map((s) => (
+            <button key={s.id} onClick={() => setStage(s.id)}
+              style={{ background: stage === s.id ? `${s.color}33` : "rgba(255,255,255,0.04)", border: stage === s.id ? `1px solid ${s.color}` : "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: stage === s.id ? s.color : "#888", fontSize: "12px", padding: "6px 12px", cursor: "pointer", fontWeight: stage === s.id ? "600" : "400" }}>
+              {s.emoji} {s.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+          <button onClick={onCancel} style={{ background: "rgba(255,255,255,0.06)", border: "none", borderRadius: "8px", color: "#888", padding: "10px 20px", cursor: "pointer", fontSize: "14px" }}>Cancel</button>
+          <button onClick={create} style={{ background: "#f59e0b", border: "none", borderRadius: "8px", color: "#000", padding: "10px 24px", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}>Create</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Nudge Banner ───
+function NudgeBanner({ projects }) {
+  const active = projects.filter((p) => p.stage === "building");
+  const stale = projects.filter((p) => p.stage !== "done" && p.stage !== "paused" && (Date.now() - p.lastTouchedAt) / 86400000 > 7);
+  const newP = projects.filter((p) => Date.now() - p.createdAt < 7 * 86400000).length;
+  const doneT = projects.reduce((s, p) => s + p.tasks.filter((t) => t.done && t.completedAt && Date.now() - t.completedAt < 7 * 86400000).length, 0);
+
+  let nudge = null;
+  if (active.length > 3) nudge = { text: `You have ${active.length} active projects. Can you pause one to focus better?`, color: "#f59e0b", icon: "⚡" };
+  else if (stale.length > 0) nudge = { text: `"${stale[0].name}" hasn't been touched in over a week. Move it forward or park it?`, color: "#ef4444", icon: "👀" };
+  else if (newP > 2 && doneT === 0) nudge = { text: `${newP} new projects this week but 0 tasks completed. Finish something first!`, color: "#f59e0b", icon: "🎯" };
+  if (!nudge) return null;
+
+  return (
+    <div style={{ background: `${nudge.color}11`, border: `1px solid ${nudge.color}33`, borderRadius: "10px", padding: "12px 16px", marginBottom: "20px", display: "flex", alignItems: "center", gap: "10px", fontSize: "14px", color: nudge.color }}>
+      <span style={{ fontSize: "18px" }}>{nudge.icon}</span><span>{nudge.text}</span>
+    </div>
+  );
+}
+
+// ─── Sync Status ───
+function SyncStatus({ status }) {
+  const c = { synced: "#10b981", saving: "#f59e0b", error: "#ef4444", loading: "#3b82f6" };
+  const l = { synced: "Synced", saving: "Saving…", error: "Sync error", loading: "Loading…" };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: c[status] || "#666" }}>
+      <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: c[status] || "#666", animation: status === "saving" || status === "loading" ? "pulse 1s infinite" : "none" }} />
+      {l[status] || status}
+      <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }`}</style>
+    </div>
+  );
+}
+
+// ─── Main App ───
+export default function Forge() {
+  const [user, setUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [projects, setProjects] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [draggingId, setDraggingId] = useState(null);
+  const [view, setView] = useState("pipeline");
+  const [syncStatus, setSyncStatus] = useState("loading");
+
+  useEffect(() => {
+    supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user || null);
+      setAuthChecked(true);
+    });
+    const t = setTimeout(() => setAuthChecked(true), 2500);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      setSyncStatus("loading");
+      try {
+        const { data } = await supabase.from("projects").select();
+        setProjects((data || []).map(dbToProject));
+        setSyncStatus("synced");
+      } catch (e) { console.error("Load error:", e); setSyncStatus("error"); }
+    })();
+  }, [user]);
+
+  const save = useCallback(async (project) => {
+    setSyncStatus("saving");
+    try { await supabase.from("projects").upsert(projectToDb(project)); setSyncStatus("synced"); }
+    catch (e) { console.error("Save error:", e); setSyncStatus("error"); }
+  }, []);
+
+  const handleAdd = async (p) => { setProjects((prev) => [...prev, p]); setShowNewForm(false); await save(p); };
+  const handleUpdate = async (u) => { setProjects((prev) => prev.map((p) => (p.id === u.id ? u : p))); setSelectedProject(u); await save(u); };
+  const handleDelete = async (id) => {
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    setSyncStatus("saving");
+    try { await supabase.from("projects").delete().eq("id", id).execute(); setSyncStatus("synced"); }
+    catch (e) { console.error("Delete error:", e); setSyncStatus("error"); }
+  };
+  const handleDrop = async (pid, newStage) => {
+    const p = projects.find((x) => x.id === pid);
+    if (!p) return;
+    const u = { ...p, stage: newStage, lastTouchedAt: Date.now() };
+    setProjects((prev) => prev.map((x) => (x.id === pid ? u : x)));
+    setDraggingId(null);
+    await save(u);
+  };
+
+  if (!authChecked) return (
+    <div style={{ background: "#111114", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#666" }}>
+      <div style={{ textAlign: "center" }}><div style={{ fontSize: "40px", marginBottom: "16px" }}>🔥</div><div>Loading…</div></div>
+    </div>
+  );
+
+  if (!user) return <LoginScreen />;
+
+  return (
+    <div style={{ background: "#111114", minHeight: "100vh", color: "#e8e8e8", fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+
+      <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <span style={{ fontSize: "28px" }}>🔥</span>
+          <div>
+            <h1 style={{ margin: 0, fontSize: "22px", fontWeight: "700", fontFamily: "'Space Grotesk', sans-serif", color: "#f59e0b", letterSpacing: "-0.5px" }}>THE FORGE</h1>
+            <span style={{ fontSize: "11px", color: "#555", letterSpacing: "2px", textTransform: "uppercase" }}>idea → execution</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+          <SyncStatus status={syncStatus} />
+          <button onClick={() => setView(view === "pipeline" ? "list" : "pipeline")}
+            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#aaa", padding: "8px 14px", cursor: "pointer", fontSize: "13px" }}>
+            {view === "pipeline" ? "📋 List" : "🔀 Pipeline"}
+          </button>
+          <button onClick={() => setShowNewForm(true)}
+            style={{ background: "#f59e0b", border: "none", borderRadius: "8px", color: "#000", padding: "8px 18px", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}>+ New Project</button>
+          <button onClick={() => supabase.auth.signOut()}
+            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#888", padding: "8px 14px", cursor: "pointer", fontSize: "12px" }}
+            title={user.email}>Sign out</button>
+        </div>
+      </div>
+
+      <div style={{ padding: "20px 24px" }}>
+        <FocusStats projects={projects} />
+        <NudgeBanner projects={projects} />
+
+        {view === "pipeline" ? (
+          <div style={{ display: "flex", gap: "14px", overflowX: "auto", paddingBottom: "20px" }}>
+            {STAGES.map((stage) => <PipelineColumn key={stage.id} stage={stage} projects={projects.filter((p) => p.stage === stage.id)} onSelect={setSelectedProject} onDrop={handleDrop} draggingId={draggingId} />)}
+          </div>
+        ) : (
+          <div>
+            {STAGES.map((stage) => {
+              const sp = projects.filter((p) => p.stage === stage.id);
+              if (!sp.length) return null;
+              return (
+                <div key={stage.id} style={{ marginBottom: "24px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                    <span>{stage.emoji}</span>
+                    <span style={{ fontWeight: "700", color: stage.color, fontSize: "14px" }}>{stage.label}</span>
+                    <span style={{ color: "#555", fontSize: "13px" }}>({sp.length})</span>
+                  </div>
+                  {sp.map((p) => {
+                    const d = p.tasks.filter((t) => t.done).length, tt = p.tasks.length, days = Math.floor((Date.now() - p.lastTouchedAt) / 86400000);
+                    return (
+                      <div key={p.id} onClick={() => setSelectedProject(p)}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "10px", marginBottom: "6px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.06)" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")} onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.03)")}>
+                        <div>
+                          <div style={{ fontWeight: "600", fontSize: "14px", color: "#e0e0e0" }}>{p.name}</div>
+                          {p.description && <div style={{ fontSize: "12px", color: "#666", marginTop: "2px" }}>{p.description.slice(0, 60)}{p.description.length > 60 ? "…" : ""}</div>}
+                        </div>
+                        <div style={{ display: "flex", gap: "16px", alignItems: "center", fontSize: "12px", color: "#666" }}>
+                          {tt > 0 && <span>{d}/{tt} tasks</span>}
+                          <span style={{ color: days > 7 ? "#ef4444" : days > 3 ? "#f59e0b" : "#666" }}>{days === 0 ? "Today" : `${days}d ago`}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {selectedProject && <ProjectDetail project={projects.find((p) => p.id === selectedProject.id) || selectedProject} onClose={() => setSelectedProject(null)} onUpdate={handleUpdate} onDelete={handleDelete} />}
+      {showNewForm && <NewProjectForm onAdd={handleAdd} onCancel={() => setShowNewForm(false)} />}
+    </div>
+  );
+}
