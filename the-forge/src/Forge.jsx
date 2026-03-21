@@ -34,14 +34,14 @@ const supabase = {
             const user = await userRes.json();
             const session = { access_token: accessToken, refresh_token: refreshToken, expires_at: Math.floor(Date.now() / 1000) + parseInt(expiresIn || "3600"), user };
             this._session = session;
-            try { sessionStorage.setItem("forge-session", JSON.stringify(session)); } catch (e) {}
+            try { localStorage.setItem("forge-session", JSON.stringify(session)); } catch (e) {}
             window.history.replaceState(null, "", window.location.pathname);
             return session;
           }
         }
       }
       try {
-        const stored = sessionStorage.getItem("forge-session");
+        const stored = localStorage.getItem("forge-session");
         if (stored) {
           const session = JSON.parse(stored);
           if (session.expires_at && session.expires_at > Date.now() / 1000 + 60) {
@@ -50,7 +50,7 @@ const supabase = {
           } else if (session.refresh_token) {
             return await this._refreshSession(session.refresh_token);
           }
-          sessionStorage.removeItem("forge-session");
+          localStorage.removeItem("forge-session");
         }
       } catch (e) {}
       return null;
@@ -67,11 +67,29 @@ const supabase = {
           const data = await res.json();
           const session = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Math.floor(Date.now() / 1000) + (data.expires_in || 3600), user: data.user };
           this._session = session;
-          try { sessionStorage.setItem("forge-session", JSON.stringify(session)); } catch (e) {}
+          try { localStorage.setItem("forge-session", JSON.stringify(session)); } catch (e) {}
           return session;
         }
       } catch (e) {}
       return null;
+    },
+
+    // Background refresh — call this to start a timer that refreshes the token before it expires
+    startAutoRefresh() {
+      this.stopAutoRefresh();
+      this._refreshInterval = setInterval(async () => {
+        if (this._session?.refresh_token) {
+          const timeLeft = (this._session.expires_at || 0) - Date.now() / 1000;
+          // Refresh if less than 5 minutes remaining
+          if (timeLeft < 300) {
+            await this._refreshSession(this._session.refresh_token);
+          }
+        }
+      }, 60000); // Check every minute
+    },
+
+    stopAutoRefresh() {
+      if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
     },
 
     async signInWithOAuth({ provider }) {
@@ -84,7 +102,8 @@ const supabase = {
         try { await fetch(`${SUPABASE_URL}/auth/v1/logout`, { method: "POST", headers: { Authorization: `Bearer ${this._session.access_token}`, apikey: SUPABASE_KEY } }); } catch (e) {}
       }
       this._session = null;
-      try { sessionStorage.removeItem("forge-session"); } catch (e) {}
+      this.stopAutoRefresh();
+      try { localStorage.removeItem("forge-session"); } catch (e) {}
       this._listeners.forEach((cb) => cb("SIGNED_OUT", null));
     },
   },
@@ -247,6 +266,8 @@ function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
   const [notes, setNotes] = useState(project.notes || "");
   const [newTask, setNewTask] = useState("");
   const [editingName, setEditingName] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState(null);
+  const [editingTaskText, setEditingTaskText] = useState("");
   const stg = STAGES.find((s) => s.id === project.stage);
   const timer = useRef(null);
 
@@ -255,6 +276,8 @@ function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
   const addTask = () => { if (!newTask.trim()) return; const t = { id: generateId(), text: newTask.trim(), done: false, createdAt: Date.now() }; onUpdate({ ...project, tasks: [...project.tasks, t], lastTouchedAt: Date.now() }); setNewTask(""); };
   const toggleTask = (tid) => { const u = project.tasks.map((t) => t.id === tid ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t); onUpdate({ ...project, tasks: u, lastTouchedAt: Date.now() }); };
   const delTask = (tid) => onUpdate({ ...project, tasks: project.tasks.filter((t) => t.id !== tid), lastTouchedAt: Date.now() });
+  const startEditTask = (task) => { setEditingTaskId(task.id); setEditingTaskText(task.text); };
+  const saveEditTask = () => { if (editingTaskText.trim()) { const u = project.tasks.map((t) => t.id === editingTaskId ? { ...t, text: editingTaskText.trim() } : t); onUpdate({ ...project, tasks: u, lastTouchedAt: Date.now() }); } setEditingTaskId(null); setEditingTaskText(""); };
   const saveName = () => { if (name.trim()) onUpdate({ ...project, name: name.trim(), lastTouchedAt: Date.now() }); setEditingName(false); };
 
   const doneT = project.tasks.filter((t) => t.done).length;
@@ -294,7 +317,14 @@ function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
                   style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "6px", border: task.done ? "none" : "2px solid rgba(255,255,255,0.2)", background: task.done ? stg.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: "12px", marginTop: "1px" }}>
                   {task.done && "✓"}
                 </button>
-                <span style={{ flex: 1, fontSize: "14px", color: task.done ? "#555" : "#ccc", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4" }}>{task.text}</span>
+                {editingTaskId === task.id ? (
+                  <input autoFocus value={editingTaskText} onChange={(e) => setEditingTaskText(e.target.value)} onBlur={saveEditTask} onKeyDown={(e) => { if (e.key === "Enter") saveEditTask(); if (e.key === "Escape") { setEditingTaskId(null); setEditingTaskText(""); } }}
+                    style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "6px", color: "#ccc", fontSize: "14px", padding: "4px 8px", outline: "none", fontFamily: "inherit" }} />
+                ) : (
+                  <span onClick={() => startEditTask(task)} style={{ flex: 1, fontSize: "14px", color: task.done ? "#555" : "#ccc", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4", cursor: "pointer", borderRadius: "4px", padding: "2px 4px", margin: "-2px -4px" }}
+                    onMouseEnter={(e) => { if (!task.done) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{task.text}</span>
+                )}
                 <button onClick={() => delTask(task.id)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1 }}
                   onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
               </div>
@@ -390,8 +420,8 @@ function NudgeBanner({ projects }) {
 }
 
 // ─── Global Task View ───
-function GlobalTaskView({ projects, onToggleTask, onSelectProject }) {
-  const [showCompleted, setShowCompleted] = useState(false);
+function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject }) {
+  const [showCompleted, setShowCompleted] = useState(true);
   const [groupByProject, setGroupByProject] = useState(true);
 
   // Flatten all tasks and attach project info
@@ -462,14 +492,14 @@ function GlobalTaskView({ projects, onToggleTask, onSelectProject }) {
               <span style={{ fontSize: "11px", color: "#666" }}>({group.tasks.length})</span>
             </div>
             {group.tasks.map((task) => (
-              <TaskRow key={task.id} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} stageColor={group.color} showProject={false} onClickProject={() => {}} />
+              <TaskRow key={task.id} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} onEditTask={onEditTask} stageColor={group.color} showProject={false} onClickProject={() => {}} />
             ))}
           </div>
         ))
       ) : (
         // Flat view
         filtered.map((task) => (
-          <TaskRow key={`${task.projectId}-${task.id}`} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} stageColor={task.stageColor} showProject={true}
+          <TaskRow key={`${task.projectId}-${task.id}`} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} onEditTask={onEditTask} stageColor={task.stageColor} showProject={true}
             onClickProject={() => onSelectProject(projects.find((p) => p.id === task.projectId))} />
         ))
       )}
@@ -477,7 +507,12 @@ function GlobalTaskView({ projects, onToggleTask, onSelectProject }) {
   );
 }
 
-function TaskRow({ task, onToggle, stageColor, showProject, onClickProject }) {
+function TaskRow({ task, onToggle, onEditTask, stageColor, showProject, onClickProject }) {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(task.text);
+
+  const saveEdit = () => { if (editText.trim() && editText.trim() !== task.text) { onEditTask(task.projectId, task.id, editText.trim()); } setEditing(false); };
+
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", marginBottom: "4px", border: "1px solid rgba(255,255,255,0.04)", transition: "background 0.15s" }}
       onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
@@ -487,8 +522,15 @@ function TaskRow({ task, onToggle, stageColor, showProject, onClickProject }) {
         {task.done && "✓"}
       </button>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ fontSize: "14px", color: task.done ? "#555" : "#ddd", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4" }}>{task.text}</span>
-        {showProject && (
+        {editing ? (
+          <input autoFocus value={editText} onChange={(e) => setEditText(e.target.value)} onBlur={saveEdit} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") { setEditText(task.text); setEditing(false); } }}
+            style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "6px", color: "#ddd", fontSize: "14px", padding: "4px 8px", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
+        ) : (
+          <span onClick={() => { setEditText(task.text); setEditing(true); }} style={{ fontSize: "14px", color: task.done ? "#555" : "#ddd", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4", cursor: "pointer", borderRadius: "4px", padding: "2px 4px", margin: "-2px -4px", display: "inline-block" }}
+            onMouseEnter={(e) => { if (!task.done) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{task.text}</span>
+        )}
+        {showProject && !editing && (
           <div onClick={onClickProject} style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px", cursor: "pointer" }}>
             <span style={{ fontSize: "11px", color: stageColor, background: `${stageColor}18`, padding: "1px 8px", borderRadius: "6px", fontWeight: "500" }}>{task.projectName}</span>
           </div>
@@ -526,9 +568,11 @@ export default function Forge() {
     supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user || null);
       setAuthChecked(true);
+      if (session) { supabase.auth.startAutoRefresh(); }
+      else { supabase.auth.stopAutoRefresh(); }
     });
     const t = setTimeout(() => setAuthChecked(true), 2500);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); supabase.auth.stopAutoRefresh(); };
   }, []);
 
   useEffect(() => {
@@ -561,6 +605,14 @@ export default function Forge() {
     const p = projects.find((x) => x.id === projectId);
     if (!p) return;
     const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t);
+    const u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
+    setProjects((prev) => prev.map((x) => (x.id === projectId ? u : x)));
+    await save(u);
+  };
+  const handleEditTask = async (projectId, taskId, newText) => {
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return;
+    const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, text: newText } : t);
     const u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
     setProjects((prev) => prev.map((x) => (x.id === projectId ? u : x)));
     await save(u);
@@ -625,7 +677,7 @@ export default function Forge() {
             {STAGES.map((stage) => <PipelineColumn key={stage.id} stage={stage} projects={projects.filter((p) => p.stage === stage.id)} onSelect={setSelectedProject} onDrop={handleDrop} draggingId={draggingId} />)}
           </div>
         ) : view === "tasks" ? (
-          <GlobalTaskView projects={projects} onToggleTask={handleToggleTask} onSelectProject={setSelectedProject} />
+          <GlobalTaskView projects={projects} onToggleTask={handleToggleTask} onEditTask={handleEditTask} onSelectProject={setSelectedProject} />
         ) : (
           <div>
             {STAGES.map((stage) => {
