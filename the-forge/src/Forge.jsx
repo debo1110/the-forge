@@ -471,16 +471,42 @@ function NewProjectForm({ onAdd, onCancel }) {
   const [name, setName] = useState("");
   const [stage, setStage] = useState("spark");
   const [desc, setDesc] = useState("");
-  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks: [], milestones: [], notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
+  const [tasks, setTasks] = useState([]);
+  const [newTask, setNewTask] = useState("");
+  const stg = STAGES.find((s) => s.id === stage);
+
+  const addTask = () => { if (!newTask.trim()) return; setTasks((prev) => [...prev, { id: generateId(), text: newTask.trim(), done: false, createdAt: Date.now() }]); setNewTask(""); };
+  const removeTask = (tid) => setTasks((prev) => prev.filter((t) => t.id !== tid));
+  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks, milestones: [], notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
 
   return (
-    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 }}>
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000, overflowY: "auto", padding: "20px 0" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "460px", margin: "0 16px", border: "1px solid rgba(255,255,255,0.1)" }}>
         <h3 style={{ margin: "0 0 20px", fontSize: "18px", color: "#f0f0f0", fontWeight: "700" }}>New Project</h3>
-        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" onKeyDown={(e) => e.key === "Enter" && create()}
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name"
           style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f0f0f0", fontSize: "16px", padding: "12px 14px", outline: "none", marginBottom: "12px", boxSizing: "border-box" }} />
         <textarea value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Brief description (optional)" rows={2}
           style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", color: "#ccc", fontSize: "14px", padding: "10px 14px", outline: "none", resize: "none", marginBottom: "16px", fontFamily: "inherit", boxSizing: "border-box" }} />
+
+        <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Tasks (optional)</label>
+        {tasks.length > 0 && (
+          <div style={{ marginBottom: "8px" }}>
+            {tasks.map((task) => (
+              <div key={task.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                <span style={{ width: "16px", height: "16px", minWidth: "16px", borderRadius: "4px", border: `2px solid ${stg.color}55`, display: "inline-block" }} />
+                <span style={{ flex: 1, fontSize: "13px", color: "#ccc" }}>{task.text}</span>
+                <button onClick={() => removeTask(task.id)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "14px", padding: "0 4px", lineHeight: 1 }}
+                  onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+          <input value={newTask} onChange={(e) => setNewTask(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} placeholder="Add a task…"
+            style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
+          <button onClick={addTask} style={{ background: `${stg.color}33`, border: `1px solid ${stg.color}55`, borderRadius: "8px", color: stg.color, padding: "8px 12px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>Add</button>
+        </div>
+
         <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Starting Stage</label>
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "20px" }}>
           {STAGES.filter((s) => s.id !== "done").map((s) => (
@@ -887,3 +913,4 @@ export default function Forge() {
     </div>
   );
 }
+
