@@ -389,6 +389,115 @@ function NudgeBanner({ projects }) {
   );
 }
 
+// ─── Global Task View ───
+function GlobalTaskView({ projects, onToggleTask, onSelectProject }) {
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [groupByProject, setGroupByProject] = useState(true);
+
+  // Flatten all tasks and attach project info
+  const allTasks = projects.flatMap((p) => {
+    const stg = STAGES.find((s) => s.id === p.stage);
+    return p.tasks.map((t) => ({ ...t, projectId: p.id, projectName: p.name, projectStage: p.stage, stageColor: stg?.color || "#888", stageEmoji: stg?.emoji || "" }));
+  });
+
+  const filtered = showCompleted ? allTasks : allTasks.filter((t) => !t.done);
+  const totalIncomplete = allTasks.filter((t) => !t.done).length;
+  const totalComplete = allTasks.filter((t) => t.done).length;
+
+  if (allTasks.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: "60px 20px", color: "#555" }}>
+        <div style={{ fontSize: "36px", marginBottom: "12px" }}>📝</div>
+        <div style={{ fontSize: "16px", marginBottom: "6px", color: "#888" }}>No tasks yet</div>
+        <div style={{ fontSize: "13px" }}>Open a project and add some tasks to see them here.</div>
+      </div>
+    );
+  }
+
+  // Group tasks by project
+  const grouped = {};
+  filtered.forEach((t) => {
+    if (!grouped[t.projectId]) grouped[t.projectId] = { name: t.projectName, stage: t.projectStage, color: t.stageColor, emoji: t.stageEmoji, tasks: [] };
+    grouped[t.projectId].tasks.push(t);
+  });
+
+  return (
+    <div>
+      {/* Controls bar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ fontSize: "14px", color: "#999" }}>
+          <span style={{ color: "#f0f0f0", fontWeight: "600" }}>{totalIncomplete}</span> remaining
+          {totalComplete > 0 && <span> · {totalComplete} done</span>}
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={() => setGroupByProject(!groupByProject)}
+            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#aaa", padding: "6px 12px", cursor: "pointer", fontSize: "12px" }}>
+            {groupByProject ? "Flat list" : "Group by project"}
+          </button>
+          <button onClick={() => setShowCompleted(!showCompleted)}
+            style={{ background: showCompleted ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.06)", border: showCompleted ? "1px solid rgba(16,185,129,0.3)" : "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: showCompleted ? "#10b981" : "#aaa", padding: "6px 12px", cursor: "pointer", fontSize: "12px" }}>
+            {showCompleted ? "Hide completed" : "Show completed"}
+          </button>
+        </div>
+      </div>
+
+      {filtered.length === 0 && (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#555" }}>
+          <div style={{ fontSize: "28px", marginBottom: "8px" }}>🎉</div>
+          <div style={{ fontSize: "14px", color: "#888" }}>All tasks complete! Nice work.</div>
+        </div>
+      )}
+
+      {groupByProject ? (
+        // Grouped view
+        Object.entries(grouped).map(([pid, group]) => (
+          <div key={pid} style={{ marginBottom: "20px" }}>
+            <div onClick={() => onSelectProject(projects.find((p) => p.id === pid))}
+              style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", cursor: "pointer", padding: "4px 0" }}
+              onMouseEnter={(e) => (e.currentTarget.querySelector('.proj-name').style.color = group.color)}
+              onMouseLeave={(e) => (e.currentTarget.querySelector('.proj-name').style.color = "#ccc")}>
+              <span style={{ fontSize: "14px" }}>{group.emoji}</span>
+              <span className="proj-name" style={{ fontWeight: "600", fontSize: "14px", color: "#ccc", transition: "color 0.15s" }}>{group.name}</span>
+              <span style={{ fontSize: "11px", color: "#555", background: `${group.color}18`, padding: "2px 8px", borderRadius: "8px" }}>{group.stage}</span>
+              <span style={{ fontSize: "11px", color: "#666" }}>({group.tasks.length})</span>
+            </div>
+            {group.tasks.map((task) => (
+              <TaskRow key={task.id} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} stageColor={group.color} showProject={false} onClickProject={() => {}} />
+            ))}
+          </div>
+        ))
+      ) : (
+        // Flat view
+        filtered.map((task) => (
+          <TaskRow key={`${task.projectId}-${task.id}`} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} stageColor={task.stageColor} showProject={true}
+            onClickProject={() => onSelectProject(projects.find((p) => p.id === task.projectId))} />
+        ))
+      )}
+    </div>
+  );
+}
+
+function TaskRow({ task, onToggle, stageColor, showProject, onClickProject }) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", marginBottom: "4px", border: "1px solid rgba(255,255,255,0.04)", transition: "background 0.15s" }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.03)")}>
+      <button onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "6px", border: task.done ? "none" : `2px solid ${stageColor}55`, background: task.done ? stageColor : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: "12px", marginTop: "1px", transition: "all 0.15s" }}>
+        {task.done && "✓"}
+      </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: "14px", color: task.done ? "#555" : "#ddd", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4" }}>{task.text}</span>
+        {showProject && (
+          <div onClick={onClickProject} style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px", cursor: "pointer" }}>
+            <span style={{ fontSize: "11px", color: stageColor, background: `${stageColor}18`, padding: "1px 8px", borderRadius: "6px", fontWeight: "500" }}>{task.projectName}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Sync Status ───
 function SyncStatus({ status }) {
   const c = { synced: "#10b981", saving: "#f59e0b", error: "#ef4444", loading: "#3b82f6" };
@@ -448,6 +557,14 @@ export default function Forge() {
     try { await supabase.from("projects").delete().eq("id", id).execute(); setSyncStatus("synced"); }
     catch (e) { console.error("Delete error:", e); setSyncStatus("error"); }
   };
+  const handleToggleTask = async (projectId, taskId) => {
+    const p = projects.find((x) => x.id === projectId);
+    if (!p) return;
+    const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t);
+    const u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
+    setProjects((prev) => prev.map((x) => (x.id === projectId ? u : x)));
+    await save(u);
+  };
   const handleDrop = async (pid, newStage) => {
     const p = projects.find((x) => x.id === pid);
     if (!p) return;
@@ -479,10 +596,18 @@ export default function Forge() {
         </div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
           <SyncStatus status={syncStatus} />
-          <button onClick={() => setView(view === "pipeline" ? "list" : "pipeline")}
-            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#aaa", padding: "8px 14px", cursor: "pointer", fontSize: "13px" }}>
-            {view === "pipeline" ? "📋 List" : "🔀 Pipeline"}
-          </button>
+          <div style={{ display: "flex", background: "rgba(255,255,255,0.06)", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
+            {[
+              { id: "pipeline", label: "Pipeline", icon: "🔀" },
+              { id: "list", label: "List", icon: "📋" },
+              { id: "tasks", label: "Tasks", icon: "✓" },
+            ].map((tab) => (
+              <button key={tab.id} onClick={() => setView(tab.id)}
+                style={{ background: view === tab.id ? "rgba(255,255,255,0.1)" : "transparent", border: "none", color: view === tab.id ? "#f0f0f0" : "#777", padding: "8px 14px", cursor: "pointer", fontSize: "13px", fontWeight: view === tab.id ? "600" : "400", transition: "all 0.15s ease", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+                {tab.icon} {tab.label}
+              </button>
+            ))}
+          </div>
           <button onClick={() => setShowNewForm(true)}
             style={{ background: "#f59e0b", border: "none", borderRadius: "8px", color: "#000", padding: "8px 18px", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}>+ New Project</button>
           <button onClick={() => supabase.auth.signOut()}
@@ -499,6 +624,8 @@ export default function Forge() {
           <div style={{ display: "flex", gap: "14px", overflowX: "auto", paddingBottom: "20px" }}>
             {STAGES.map((stage) => <PipelineColumn key={stage.id} stage={stage} projects={projects.filter((p) => p.stage === stage.id)} onSelect={setSelectedProject} onDrop={handleDrop} draggingId={draggingId} />)}
           </div>
+        ) : view === "tasks" ? (
+          <GlobalTaskView projects={projects} onToggleTask={handleToggleTask} onSelectProject={setSelectedProject} />
         ) : (
           <div>
             {STAGES.map((stage) => {
