@@ -546,19 +546,33 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
     );
   }
 
+  // Stage ordering: building first, then planned, shaping, spark, paused, done
+  const stageOrder = STAGES.map((s) => s.id);
+
   // Group tasks by project
   const groupedByProject = {};
   filtered.forEach((t) => {
     if (!groupedByProject[t.projectId]) groupedByProject[t.projectId] = { name: t.projectName, stage: t.projectStage, color: t.stageColor, emoji: t.stageEmoji, tasks: [] };
     groupedByProject[t.projectId].tasks.push(t);
   });
+  const sortedByProject = Object.entries(groupedByProject).sort(([, a], [, b]) => {
+    const ai = stageOrder.indexOf(a.stage), bi = stageOrder.indexOf(b.stage);
+    // Building (3) first, then planned (2), shaping (1), spark (0), paused (4), done (5)
+    const priority = [4, 3, 2, 1, 5, 6]; // spark=4, shaping=3, planned=2, building=1, paused=5, done=6
+    return (priority[ai] || 9) - (priority[bi] || 9);
+  });
 
   // Group tasks by milestone (project → milestone)
   const groupedByMilestone = {};
   filtered.forEach((t) => {
     const key = t.milestoneId ? `${t.projectId}::${t.milestoneId}` : `${t.projectId}::_loose`;
-    if (!groupedByMilestone[key]) groupedByMilestone[key] = { projectName: t.projectName, milestoneName: t.milestoneName, color: t.stageColor, emoji: t.stageEmoji, projectId: t.projectId, tasks: [] };
+    if (!groupedByMilestone[key]) groupedByMilestone[key] = { projectName: t.projectName, milestoneName: t.milestoneName, color: t.stageColor, emoji: t.stageEmoji, projectId: t.projectId, stage: t.projectStage, tasks: [] };
     groupedByMilestone[key].tasks.push(t);
+  });
+  const sortedByMilestone = Object.entries(groupedByMilestone).sort(([, a], [, b]) => {
+    const priority = [4, 3, 2, 1, 5, 6];
+    const ai = stageOrder.indexOf(a.stage), bi = stageOrder.indexOf(b.stage);
+    return (priority[ai] || 9) - (priority[bi] || 9);
   });
 
   const groupModes = [
@@ -599,7 +613,7 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
       )}
 
       {groupMode === "project" ? (
-        Object.entries(groupedByProject).map(([pid, group]) => (
+        sortedByProject.map(([pid, group]) => (
           <div key={pid} style={{ marginBottom: "20px" }}>
             <div onClick={() => onSelectProject(projects.find((p) => p.id === pid))}
               style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", cursor: "pointer", padding: "4px 0" }}
@@ -616,7 +630,7 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
           </div>
         ))
       ) : groupMode === "milestone" ? (
-        Object.entries(groupedByMilestone).map(([key, group]) => (
+        sortedByMilestone.map(([key, group]) => (
           <div key={key} style={{ marginBottom: "20px" }}>
             <div onClick={() => onSelectProject(projects.find((p) => p.id === group.projectId))}
               style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", cursor: "pointer", padding: "4px 0", flexWrap: "wrap" }}>
