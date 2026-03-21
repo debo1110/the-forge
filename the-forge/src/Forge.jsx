@@ -151,12 +151,29 @@ const STAGES = [
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
+// Get all tasks from a project (loose + milestone tasks)
+function getAllTasks(project) {
+  const loose = (project.tasks || []).map((t) => ({ ...t, milestoneId: null, milestoneName: null }));
+  const fromMilestones = (project.milestones || []).flatMap((m) => (m.tasks || []).map((t) => ({ ...t, milestoneId: m.id, milestoneName: m.name })));
+  return [...loose, ...fromMilestones];
+}
+
 function dbToProject(row) {
-  return { id: row.id, name: row.name, description: row.description || "", stage: row.stage, notes: row.notes || "", tasks: typeof row.tasks === "string" ? JSON.parse(row.tasks) : (row.tasks || []), createdAt: row.created_at, lastTouchedAt: row.last_touched_at };
+  const raw = typeof row.tasks === "string" ? JSON.parse(row.tasks) : (row.tasks || []);
+  // Backward compatibility: old format is flat array of tasks. New format is { tasks: [], milestones: [] }
+  let tasks, milestones;
+  if (Array.isArray(raw)) {
+    tasks = raw;
+    milestones = [];
+  } else {
+    tasks = raw.tasks || [];
+    milestones = raw.milestones || [];
+  }
+  return { id: row.id, name: row.name, description: row.description || "", stage: row.stage, notes: row.notes || "", tasks, milestones, createdAt: row.created_at, lastTouchedAt: row.last_touched_at };
 }
 
 function projectToDb(p) {
-  return { id: p.id, name: p.name, description: p.description || "", stage: p.stage, notes: p.notes || "", tasks: JSON.stringify(p.tasks || []), created_at: p.createdAt, last_touched_at: p.lastTouchedAt };
+  return { id: p.id, name: p.name, description: p.description || "", stage: p.stage, notes: p.notes || "", tasks: JSON.stringify({ tasks: p.tasks || [], milestones: p.milestones || [] }), created_at: p.createdAt, last_touched_at: p.lastTouchedAt };
 }
 
 // ─── Login Screen ───
@@ -183,11 +200,11 @@ function LoginScreen() {
 // ─── Focus Stats ───
 function FocusStats({ projects }) {
   const active = projects.filter((p) => p.stage === "building");
-  const totalTasks = projects.reduce((s, p) => s + p.tasks.length, 0);
-  const doneTasks = projects.reduce((s, p) => s + p.tasks.filter((t) => t.done).length, 0);
+  const totalTasks = projects.reduce((s, p) => s + getAllTasks(p).length, 0);
+  const doneTasks = projects.reduce((s, p) => s + getAllTasks(p).filter((t) => t.done).length, 0);
   const rate = totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
   const stale = projects.filter((p) => p.stage !== "done" && p.stage !== "paused" && (Date.now() - p.lastTouchedAt) / 86400000 > 7);
-  const weekDone = projects.reduce((s, p) => s + p.tasks.filter((t) => t.done && t.completedAt && Date.now() - t.completedAt < 7 * 86400000).length, 0);
+  const weekDone = projects.reduce((s, p) => s + getAllTasks(p).filter((t) => t.done && t.completedAt && Date.now() - t.completedAt < 7 * 86400000).length, 0);
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", marginBottom: "28px" }}>
@@ -209,8 +226,9 @@ function FocusStats({ projects }) {
 
 // ─── Project Card ───
 function ProjectCard({ project, onSelect, isDragging }) {
-  const done = project.tasks.filter((t) => t.done).length;
-  const total = project.tasks.length;
+  const allT = getAllTasks(project);
+  const done = allT.filter((t) => t.done).length;
+  const total = allT.length;
   const pct = total > 0 ? (done / total) * 100 : 0;
   const days = Math.floor((Date.now() - project.lastTouchedAt) / 86400000);
   const stg = STAGES.find((s) => s.id === project.stage);
@@ -265,23 +283,67 @@ function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
   const [description, setDescription] = useState(project.description || "");
   const [notes, setNotes] = useState(project.notes || "");
   const [newTask, setNewTask] = useState("");
+  const [newMilestoneName, setNewMilestoneName] = useState("");
+  const [showNewMilestone, setShowNewMilestone] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [editingTaskText, setEditingTaskText] = useState("");
+  const [editingMilestoneId, setEditingMilestoneId] = useState(null);
+  const [editingMilestoneName, setEditingMilestoneName] = useState("");
+  const [collapsedMilestones, setCollapsedMilestones] = useState({});
+  const [milestoneNewTask, setMilestoneNewTask] = useState({});
   const stg = STAGES.find((s) => s.id === project.stage);
   const timer = useRef(null);
 
   const debounced = (updates) => { clearTimeout(timer.current); timer.current = setTimeout(() => onUpdate({ ...project, ...updates, lastTouchedAt: Date.now() }), 600); };
 
+  // Loose task operations
   const addTask = () => { if (!newTask.trim()) return; const t = { id: generateId(), text: newTask.trim(), done: false, createdAt: Date.now() }; onUpdate({ ...project, tasks: [...project.tasks, t], lastTouchedAt: Date.now() }); setNewTask(""); };
   const toggleTask = (tid) => { const u = project.tasks.map((t) => t.id === tid ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t); onUpdate({ ...project, tasks: u, lastTouchedAt: Date.now() }); };
   const delTask = (tid) => onUpdate({ ...project, tasks: project.tasks.filter((t) => t.id !== tid), lastTouchedAt: Date.now() });
   const startEditTask = (task) => { setEditingTaskId(task.id); setEditingTaskText(task.text); };
   const saveEditTask = () => { if (editingTaskText.trim()) { const u = project.tasks.map((t) => t.id === editingTaskId ? { ...t, text: editingTaskText.trim() } : t); onUpdate({ ...project, tasks: u, lastTouchedAt: Date.now() }); } setEditingTaskId(null); setEditingTaskText(""); };
+
+  // Milestone operations
+  const addMilestone = () => { if (!newMilestoneName.trim()) return; const m = { id: generateId(), name: newMilestoneName.trim(), tasks: [], createdAt: Date.now() }; onUpdate({ ...project, milestones: [...(project.milestones || []), m], lastTouchedAt: Date.now() }); setNewMilestoneName(""); setShowNewMilestone(false); };
+  const delMilestone = (mid) => onUpdate({ ...project, milestones: (project.milestones || []).filter((m) => m.id !== mid), lastTouchedAt: Date.now() });
+  const startEditMilestone = (m) => { setEditingMilestoneId(m.id); setEditingMilestoneName(m.name); };
+  const saveEditMilestone = () => { if (editingMilestoneName.trim()) { const u = (project.milestones || []).map((m) => m.id === editingMilestoneId ? { ...m, name: editingMilestoneName.trim() } : m); onUpdate({ ...project, milestones: u, lastTouchedAt: Date.now() }); } setEditingMilestoneId(null); setEditingMilestoneName(""); };
+  const toggleCollapse = (mid) => setCollapsedMilestones((prev) => ({ ...prev, [mid]: !prev[mid] }));
+
+  // Milestone task operations
+  const addMilestoneTask = (mid) => { const text = (milestoneNewTask[mid] || "").trim(); if (!text) return; const t = { id: generateId(), text, done: false, createdAt: Date.now() }; const u = (project.milestones || []).map((m) => m.id === mid ? { ...m, tasks: [...m.tasks, t] } : m); onUpdate({ ...project, milestones: u, lastTouchedAt: Date.now() }); setMilestoneNewTask((prev) => ({ ...prev, [mid]: "" })); };
+  const toggleMilestoneTask = (mid, tid) => { const u = (project.milestones || []).map((m) => m.id === mid ? { ...m, tasks: m.tasks.map((t) => t.id === tid ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t) } : m); onUpdate({ ...project, milestones: u, lastTouchedAt: Date.now() }); };
+  const delMilestoneTask = (mid, tid) => { const u = (project.milestones || []).map((m) => m.id === mid ? { ...m, tasks: m.tasks.filter((t) => t.id !== tid) } : m); onUpdate({ ...project, milestones: u, lastTouchedAt: Date.now() }); };
+  const startEditMilestoneTask = (task) => { setEditingTaskId(task.id); setEditingTaskText(task.text); };
+  const saveEditMilestoneTask = (mid) => { if (editingTaskText.trim()) { const u = (project.milestones || []).map((m) => m.id === mid ? { ...m, tasks: m.tasks.map((t) => t.id === editingTaskId ? { ...t, text: editingTaskText.trim() } : t) } : m); onUpdate({ ...project, milestones: u, lastTouchedAt: Date.now() }); } setEditingTaskId(null); setEditingTaskText(""); };
+
   const saveName = () => { if (name.trim()) onUpdate({ ...project, name: name.trim(), lastTouchedAt: Date.now() }); setEditingName(false); };
 
-  const doneT = project.tasks.filter((t) => t.done).length;
-  const totalT = project.tasks.length;
+  const allT = getAllTasks(project);
+  const doneT = allT.filter((t) => t.done).length;
+  const totalT = allT.length;
+
+  const renderTask = (task, { onToggle, onDel, onStartEdit, onSaveEdit, milestoneId }) => (
+    <div key={task.id} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+      <button onClick={onToggle}
+        style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "6px", border: task.done ? "none" : "2px solid rgba(255,255,255,0.2)", background: task.done ? stg.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: "12px", marginTop: "1px" }}>
+        {task.done && "✓"}
+      </button>
+      {editingTaskId === task.id ? (
+        <input autoFocus value={editingTaskText} onChange={(e) => setEditingTaskText(e.target.value)}
+          onBlur={() => milestoneId ? saveEditMilestoneTask(milestoneId) : saveEditTask()}
+          onKeyDown={(e) => { if (e.key === "Enter") { milestoneId ? saveEditMilestoneTask(milestoneId) : saveEditTask(); } if (e.key === "Escape") { setEditingTaskId(null); setEditingTaskText(""); } }}
+          style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "6px", color: "#ccc", fontSize: "14px", padding: "4px 8px", outline: "none", fontFamily: "inherit" }} />
+      ) : (
+        <span onClick={() => onStartEdit(task)} style={{ flex: 1, fontSize: "14px", color: task.done ? "#555" : "#ccc", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4", cursor: "pointer", borderRadius: "4px", padding: "2px 4px", margin: "-2px -4px" }}
+          onMouseEnter={(e) => { if (!task.done) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{task.text}</span>
+      )}
+      <button onClick={onDel} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1 }}
+        onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
+    </div>
+  );
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", paddingTop: "5vh", zIndex: 1000, overflowY: "auto" }}>
@@ -309,32 +371,70 @@ function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
               style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "14px", padding: "10px 12px", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} />
           </div>
 
+          {/* ── Loose Tasks ── */}
           <div style={{ marginBottom: "20px" }}>
             <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "10px" }}>Tasks & Steps</label>
-            {project.tasks.map((task) => (
-              <div key={task.id} style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                <button onClick={() => toggleTask(task.id)}
-                  style={{ width: "20px", height: "20px", minWidth: "20px", borderRadius: "6px", border: task.done ? "none" : "2px solid rgba(255,255,255,0.2)", background: task.done ? stg.color : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: "12px", marginTop: "1px" }}>
-                  {task.done && "✓"}
-                </button>
-                {editingTaskId === task.id ? (
-                  <input autoFocus value={editingTaskText} onChange={(e) => setEditingTaskText(e.target.value)} onBlur={saveEditTask} onKeyDown={(e) => { if (e.key === "Enter") saveEditTask(); if (e.key === "Escape") { setEditingTaskId(null); setEditingTaskText(""); } }}
-                    style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "6px", color: "#ccc", fontSize: "14px", padding: "4px 8px", outline: "none", fontFamily: "inherit" }} />
-                ) : (
-                  <span onClick={() => startEditTask(task)} style={{ flex: 1, fontSize: "14px", color: task.done ? "#555" : "#ccc", textDecoration: task.done ? "line-through" : "none", lineHeight: "1.4", cursor: "pointer", borderRadius: "4px", padding: "2px 4px", margin: "-2px -4px" }}
-                    onMouseEnter={(e) => { if (!task.done) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{task.text}</span>
-                )}
-                <button onClick={() => delTask(task.id)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "16px", padding: "0 4px", lineHeight: 1 }}
-                  onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
-              </div>
-            ))}
+            {project.tasks.map((task) => renderTask(task, { onToggle: () => toggleTask(task.id), onDel: () => delTask(task.id), onStartEdit: startEditTask, onSaveEdit: saveEditTask, milestoneId: null }))}
             <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
-              <input value={newTask} onChange={(e) => setNewTask(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} placeholder="Add a task or next step…"
+              <input value={newTask} onChange={(e) => setNewTask(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()} placeholder="Add a task…"
                 style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "14px", padding: "10px 12px", outline: "none" }} />
               <button onClick={addTask} style={{ background: stg.color, border: "none", borderRadius: "8px", color: "#fff", padding: "10px 16px", fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>Add</button>
             </div>
           </div>
+
+          {/* ── Milestones ── */}
+          {(project.milestones || []).map((milestone) => {
+            const mDone = milestone.tasks.filter((t) => t.done).length;
+            const mTotal = milestone.tasks.length;
+            const isCollapsed = collapsedMilestones[milestone.id];
+            return (
+              <div key={milestone.id} style={{ marginBottom: "16px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: "10px", padding: "12px 14px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: isCollapsed ? 0 : "8px" }}>
+                  <button onClick={() => toggleCollapse(milestone.id)}
+                    style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "12px", padding: "2px 4px", transition: "transform 0.15s", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▼</button>
+                  {editingMilestoneId === milestone.id ? (
+                    <input autoFocus value={editingMilestoneName} onChange={(e) => setEditingMilestoneName(e.target.value)} onBlur={saveEditMilestone} onKeyDown={(e) => { if (e.key === "Enter") saveEditMilestone(); if (e.key === "Escape") { setEditingMilestoneId(null); setEditingMilestoneName(""); } }}
+                      style={{ flex: 1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: "6px", color: "#e0e0e0", fontSize: "14px", fontWeight: "600", padding: "4px 8px", outline: "none" }} />
+                  ) : (
+                    <span onClick={() => startEditMilestone(milestone)} style={{ flex: 1, fontWeight: "600", fontSize: "14px", color: "#e0e0e0", cursor: "pointer", borderRadius: "4px", padding: "2px 4px", margin: "-2px -4px" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>{milestone.name}</span>
+                  )}
+                  {mTotal > 0 && <span style={{ fontSize: "11px", color: mDone === mTotal && mTotal > 0 ? "#10b981" : "#777", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: "8px" }}>{mDone}/{mTotal}</span>}
+                  <button onClick={() => { if (confirm(`Delete milestone "${milestone.name}" and all its tasks?`)) delMilestone(milestone.id); }}
+                    style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "14px", padding: "0 4px" }}
+                    onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
+                </div>
+                {!isCollapsed && (
+                  <div style={{ paddingLeft: "24px" }}>
+                    {milestone.tasks.map((task) => renderTask(task, { onToggle: () => toggleMilestoneTask(milestone.id, task.id), onDel: () => delMilestoneTask(milestone.id, task.id), onStartEdit: startEditMilestoneTask, onSaveEdit: () => saveEditMilestoneTask(milestone.id), milestoneId: milestone.id }))}
+                    <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                      <input value={milestoneNewTask[milestone.id] || ""} onChange={(e) => setMilestoneNewTask((prev) => ({ ...prev, [milestone.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && addMilestoneTask(milestone.id)} placeholder="Add task to this milestone…"
+                        style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "8px 10px", outline: "none" }} />
+                      <button onClick={() => addMilestoneTask(milestone.id)} style={{ background: `${stg.color}33`, border: `1px solid ${stg.color}55`, borderRadius: "8px", color: stg.color, padding: "8px 12px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>Add</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* ── Add Milestone Button ── */}
+          {showNewMilestone ? (
+            <div style={{ display: "flex", gap: "8px", marginBottom: "20px" }}>
+              <input autoFocus value={newMilestoneName} onChange={(e) => setNewMilestoneName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMilestone(); if (e.key === "Escape") { setShowNewMilestone(false); setNewMilestoneName(""); } }} placeholder="Milestone name (e.g. Launch Shopify Site)"
+                style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "14px", padding: "10px 12px", outline: "none" }} />
+              <button onClick={addMilestone} style={{ background: stg.color, border: "none", borderRadius: "8px", color: "#fff", padding: "10px 16px", fontSize: "13px", fontWeight: "600", cursor: "pointer" }}>Add</button>
+              <button onClick={() => { setShowNewMilestone(false); setNewMilestoneName(""); }} style={{ background: "rgba(255,255,255,0.06)", border: "none", borderRadius: "8px", color: "#888", padding: "10px 12px", cursor: "pointer", fontSize: "13px" }}>Cancel</button>
+            </div>
+          ) : (
+            <button onClick={() => setShowNewMilestone(true)}
+              style={{ background: "rgba(255,255,255,0.04)", border: "1px dashed rgba(255,255,255,0.15)", borderRadius: "8px", color: "#888", padding: "10px 16px", cursor: "pointer", fontSize: "13px", width: "100%", marginBottom: "20px", transition: "all 0.15s" }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "#bbb"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.color = "#888"; }}>
+              + Add Milestone
+            </button>
+          )}
 
           <div style={{ marginBottom: "20px" }}>
             <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "6px" }}>Notes</label>
@@ -371,7 +471,7 @@ function NewProjectForm({ onAdd, onCancel }) {
   const [name, setName] = useState("");
   const [stage, setStage] = useState("spark");
   const [desc, setDesc] = useState("");
-  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks: [], notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
+  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks: [], milestones: [], notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
 
   return (
     <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 }}>
@@ -404,7 +504,7 @@ function NudgeBanner({ projects }) {
   const active = projects.filter((p) => p.stage === "building");
   const stale = projects.filter((p) => p.stage !== "done" && p.stage !== "paused" && (Date.now() - p.lastTouchedAt) / 86400000 > 7);
   const newP = projects.filter((p) => Date.now() - p.createdAt < 7 * 86400000).length;
-  const doneT = projects.reduce((s, p) => s + p.tasks.filter((t) => t.done && t.completedAt && Date.now() - t.completedAt < 7 * 86400000).length, 0);
+  const doneT = projects.reduce((s, p) => s + getAllTasks(p).filter((t) => t.done && t.completedAt && Date.now() - t.completedAt < 7 * 86400000).length, 0);
 
   let nudge = null;
   if (active.length > 3) nudge = { text: `You have ${active.length} active projects. Can you pause one to focus better?`, color: "#f59e0b", icon: "⚡" };
@@ -422,12 +522,14 @@ function NudgeBanner({ projects }) {
 // ─── Global Task View ───
 function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject }) {
   const [showCompleted, setShowCompleted] = useState(true);
-  const [groupByProject, setGroupByProject] = useState(true);
+  const [groupMode, setGroupMode] = useState("project"); // "flat", "project", "milestone"
 
-  // Flatten all tasks and attach project info
+  // Flatten all tasks from all projects (loose + milestone tasks) with context
   const allTasks = projects.flatMap((p) => {
     const stg = STAGES.find((s) => s.id === p.stage);
-    return p.tasks.map((t) => ({ ...t, projectId: p.id, projectName: p.name, projectStage: p.stage, stageColor: stg?.color || "#888", stageEmoji: stg?.emoji || "" }));
+    const loose = (p.tasks || []).map((t) => ({ ...t, projectId: p.id, projectName: p.name, projectStage: p.stage, stageColor: stg?.color || "#888", stageEmoji: stg?.emoji || "", milestoneId: null, milestoneName: null }));
+    const fromMilestones = (p.milestones || []).flatMap((m) => (m.tasks || []).map((t) => ({ ...t, projectId: p.id, projectName: p.name, projectStage: p.stage, stageColor: stg?.color || "#888", stageEmoji: stg?.emoji || "", milestoneId: m.id, milestoneName: m.name })));
+    return [...loose, ...fromMilestones];
   });
 
   const filtered = showCompleted ? allTasks : allTasks.filter((t) => !t.done);
@@ -445,11 +547,25 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
   }
 
   // Group tasks by project
-  const grouped = {};
+  const groupedByProject = {};
   filtered.forEach((t) => {
-    if (!grouped[t.projectId]) grouped[t.projectId] = { name: t.projectName, stage: t.projectStage, color: t.stageColor, emoji: t.stageEmoji, tasks: [] };
-    grouped[t.projectId].tasks.push(t);
+    if (!groupedByProject[t.projectId]) groupedByProject[t.projectId] = { name: t.projectName, stage: t.projectStage, color: t.stageColor, emoji: t.stageEmoji, tasks: [] };
+    groupedByProject[t.projectId].tasks.push(t);
   });
+
+  // Group tasks by milestone (project → milestone)
+  const groupedByMilestone = {};
+  filtered.forEach((t) => {
+    const key = t.milestoneId ? `${t.projectId}::${t.milestoneId}` : `${t.projectId}::_loose`;
+    if (!groupedByMilestone[key]) groupedByMilestone[key] = { projectName: t.projectName, milestoneName: t.milestoneName, color: t.stageColor, emoji: t.stageEmoji, projectId: t.projectId, tasks: [] };
+    groupedByMilestone[key].tasks.push(t);
+  });
+
+  const groupModes = [
+    { id: "flat", label: "Flat list" },
+    { id: "project", label: "By project" },
+    { id: "milestone", label: "By milestone" },
+  ];
 
   return (
     <div>
@@ -460,10 +576,14 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
           {totalComplete > 0 && <span> · {totalComplete} done</span>}
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
-          <button onClick={() => setGroupByProject(!groupByProject)}
-            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#aaa", padding: "6px 12px", cursor: "pointer", fontSize: "12px" }}>
-            {groupByProject ? "Flat list" : "Group by project"}
-          </button>
+          <div style={{ display: "flex", background: "rgba(255,255,255,0.06)", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
+            {groupModes.map((gm) => (
+              <button key={gm.id} onClick={() => setGroupMode(gm.id)}
+                style={{ background: groupMode === gm.id ? "rgba(255,255,255,0.1)" : "transparent", border: "none", color: groupMode === gm.id ? "#f0f0f0" : "#777", padding: "6px 10px", cursor: "pointer", fontSize: "11px", fontWeight: groupMode === gm.id ? "600" : "400", transition: "all 0.15s", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+                {gm.label}
+              </button>
+            ))}
+          </div>
           <button onClick={() => setShowCompleted(!showCompleted)}
             style={{ background: showCompleted ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.06)", border: showCompleted ? "1px solid rgba(16,185,129,0.3)" : "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: showCompleted ? "#10b981" : "#aaa", padding: "6px 12px", cursor: "pointer", fontSize: "12px" }}>
             {showCompleted ? "Hide completed" : "Show completed"}
@@ -478,9 +598,8 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
         </div>
       )}
 
-      {groupByProject ? (
-        // Grouped view
-        Object.entries(grouped).map(([pid, group]) => (
+      {groupMode === "project" ? (
+        Object.entries(groupedByProject).map(([pid, group]) => (
           <div key={pid} style={{ marginBottom: "20px" }}>
             <div onClick={() => onSelectProject(projects.find((p) => p.id === pid))}
               style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", cursor: "pointer", padding: "4px 0" }}
@@ -492,14 +611,32 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
               <span style={{ fontSize: "11px", color: "#666" }}>({group.tasks.length})</span>
             </div>
             {group.tasks.map((task) => (
-              <TaskRow key={task.id} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} onEditTask={onEditTask} stageColor={group.color} showProject={false} onClickProject={() => {}} />
+              <TaskRow key={task.id} task={task} onToggle={() => onToggleTask(task.projectId, task.id, task.milestoneId)} onEditTask={onEditTask} stageColor={group.color} showProject={false} showMilestone={!!task.milestoneName} onClickProject={() => {}} />
+            ))}
+          </div>
+        ))
+      ) : groupMode === "milestone" ? (
+        Object.entries(groupedByMilestone).map(([key, group]) => (
+          <div key={key} style={{ marginBottom: "20px" }}>
+            <div onClick={() => onSelectProject(projects.find((p) => p.id === group.projectId))}
+              style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px", cursor: "pointer", padding: "4px 0", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "14px" }}>{group.emoji}</span>
+              <span style={{ fontWeight: "600", fontSize: "13px", color: "#999" }}>{group.projectName}</span>
+              {group.milestoneName ? (
+                <><span style={{ color: "#555", fontSize: "12px" }}>→</span><span style={{ fontWeight: "600", fontSize: "14px", color: "#ccc" }}>{group.milestoneName}</span></>
+              ) : (
+                <span style={{ fontSize: "12px", color: "#666", fontStyle: "italic" }}>Loose tasks</span>
+              )}
+              <span style={{ fontSize: "11px", color: "#666" }}>({group.tasks.length})</span>
+            </div>
+            {group.tasks.map((task) => (
+              <TaskRow key={task.id} task={task} onToggle={() => onToggleTask(task.projectId, task.id, task.milestoneId)} onEditTask={onEditTask} stageColor={group.color} showProject={false} showMilestone={false} onClickProject={() => {}} />
             ))}
           </div>
         ))
       ) : (
-        // Flat view
         filtered.map((task) => (
-          <TaskRow key={`${task.projectId}-${task.id}`} task={task} onToggle={() => onToggleTask(task.projectId, task.id)} onEditTask={onEditTask} stageColor={task.stageColor} showProject={true}
+          <TaskRow key={`${task.projectId}-${task.milestoneId || "l"}-${task.id}`} task={task} onToggle={() => onToggleTask(task.projectId, task.id, task.milestoneId)} onEditTask={onEditTask} stageColor={task.stageColor} showProject={true} showMilestone={!!task.milestoneName}
             onClickProject={() => onSelectProject(projects.find((p) => p.id === task.projectId))} />
         ))
       )}
@@ -507,11 +644,11 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onSelectProject })
   );
 }
 
-function TaskRow({ task, onToggle, onEditTask, stageColor, showProject, onClickProject }) {
+function TaskRow({ task, onToggle, onEditTask, stageColor, showProject, showMilestone, onClickProject }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(task.text);
 
-  const saveEdit = () => { if (editText.trim() && editText.trim() !== task.text) { onEditTask(task.projectId, task.id, editText.trim()); } setEditing(false); };
+  const saveEdit = () => { if (editText.trim() && editText.trim() !== task.text) { onEditTask(task.projectId, task.id, editText.trim(), task.milestoneId); } setEditing(false); };
 
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", marginBottom: "4px", border: "1px solid rgba(255,255,255,0.04)", transition: "background 0.15s" }}
@@ -530,10 +667,15 @@ function TaskRow({ task, onToggle, onEditTask, stageColor, showProject, onClickP
             onMouseEnter={(e) => { if (!task.done) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{task.text}</span>
         )}
-        {showProject && !editing && (
-          <div onClick={onClickProject} style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px", cursor: "pointer" }}>
-            <span style={{ fontSize: "11px", color: stageColor, background: `${stageColor}18`, padding: "1px 8px", borderRadius: "6px", fontWeight: "500" }}>{task.projectName}</span>
-          </div>
+        {!editing && (showProject || showMilestone) && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "4px", marginLeft: "8px" }}>
+            {showProject && (
+              <span onClick={onClickProject} style={{ fontSize: "11px", color: stageColor, background: `${stageColor}18`, padding: "1px 8px", borderRadius: "6px", fontWeight: "500", cursor: "pointer" }}>{task.projectName}</span>
+            )}
+            {showMilestone && task.milestoneName && (
+              <span style={{ fontSize: "11px", color: "#888", background: "rgba(255,255,255,0.06)", padding: "1px 8px", borderRadius: "6px" }}>{task.milestoneName}</span>
+            )}
+          </span>
         )}
       </div>
     </div>
@@ -601,19 +743,31 @@ export default function Forge() {
     try { await supabase.from("projects").delete().eq("id", id).execute(); setSyncStatus("synced"); }
     catch (e) { console.error("Delete error:", e); setSyncStatus("error"); }
   };
-  const handleToggleTask = async (projectId, taskId) => {
+  const handleToggleTask = async (projectId, taskId, milestoneId) => {
     const p = projects.find((x) => x.id === projectId);
     if (!p) return;
-    const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t);
-    const u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
+    let u;
+    if (milestoneId) {
+      const updatedMilestones = (p.milestones || []).map((m) => m.id === milestoneId ? { ...m, tasks: m.tasks.map((t) => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t) } : m);
+      u = { ...p, milestones: updatedMilestones, lastTouchedAt: Date.now() };
+    } else {
+      const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, done: !t.done, completedAt: !t.done ? Date.now() : null } : t);
+      u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
+    }
     setProjects((prev) => prev.map((x) => (x.id === projectId ? u : x)));
     await save(u);
   };
-  const handleEditTask = async (projectId, taskId, newText) => {
+  const handleEditTask = async (projectId, taskId, newText, milestoneId) => {
     const p = projects.find((x) => x.id === projectId);
     if (!p) return;
-    const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, text: newText } : t);
-    const u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
+    let u;
+    if (milestoneId) {
+      const updatedMilestones = (p.milestones || []).map((m) => m.id === milestoneId ? { ...m, tasks: m.tasks.map((t) => t.id === taskId ? { ...t, text: newText } : t) } : m);
+      u = { ...p, milestones: updatedMilestones, lastTouchedAt: Date.now() };
+    } else {
+      const updatedTasks = p.tasks.map((t) => t.id === taskId ? { ...t, text: newText } : t);
+      u = { ...p, tasks: updatedTasks, lastTouchedAt: Date.now() };
+    }
     setProjects((prev) => prev.map((x) => (x.id === projectId ? u : x)));
     await save(u);
   };
@@ -691,7 +845,7 @@ export default function Forge() {
                     <span style={{ color: "#555", fontSize: "13px" }}>({sp.length})</span>
                   </div>
                   {sp.map((p) => {
-                    const d = p.tasks.filter((t) => t.done).length, tt = p.tasks.length, days = Math.floor((Date.now() - p.lastTouchedAt) / 86400000);
+                    const allT = getAllTasks(p); const d = allT.filter((t) => t.done).length; const tt = allT.length; const days = Math.floor((Date.now() - p.lastTouchedAt) / 86400000);
                     return (
                       <div key={p.id} onClick={() => setSelectedProject(p)}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "10px", marginBottom: "6px", cursor: "pointer", border: "1px solid rgba(255,255,255,0.06)" }}
