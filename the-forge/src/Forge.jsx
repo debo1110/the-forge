@@ -1,5 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// ─── Mobile Detection ───
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(window.innerWidth < breakpoint);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, [breakpoint]);
+  return isMobile;
+}
+
+const MOBILE_STYLES = `
+  @media (max-width: 768px) {
+    .forge-mobile-checkbox { width: 28px !important; height: 28px !important; min-width: 28px !important; font-size: 14px !important; }
+    .forge-task-row { padding: 12px 14px !important; }
+    .forge-task-row button { min-width: 36px; min-height: 36px; }
+    .forge-modal-mobile { margin: 0 !important; border-radius: 0 !important; max-width: 100% !important; min-height: 100vh; }
+    .forge-modal-backdrop-mobile { padding-top: 0 !important; align-items: stretch !important; }
+  }
+`;
+
 // ─── Supabase Config ───
 const SUPABASE_URL = "https://uhfuskvhwuxphwslkeiw.supabase.co";
 const SUPABASE_KEY = "sb_publishable_dTdyyGORoiDZlN_w6aWJ7Q_cKvrfwEi";
@@ -369,8 +390,8 @@ function ProjectDetail({ project, onClose, onUpdate, onDelete }) {
   );
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", paddingTop: "5vh", zIndex: 1000, overflowY: "auto" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", width: "100%", maxWidth: "640px", margin: "0 16px 40px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
+    <div onClick={onClose} className="forge-modal-backdrop-mobile" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", paddingTop: "5vh", zIndex: 1000, overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="forge-modal-mobile" style={{ background: "#1a1a1e", borderRadius: "16px", width: "100%", maxWidth: "640px", margin: "0 16px 40px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
         <div style={{ padding: "24px 24px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
             {editingName ? (
@@ -511,8 +532,8 @@ function NewProjectForm({ onAdd, onCancel }) {
   const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks, milestones, notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
 
   return (
-    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", zIndex: 1000, overflowY: "auto", padding: "5vh 0" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "460px", margin: "0 16px 40px", border: "1px solid rgba(255,255,255,0.1)" }}>
+    <div onClick={onCancel} className="forge-modal-backdrop-mobile" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", zIndex: 1000, overflowY: "auto", padding: "5vh 0" }}>
+      <div onClick={(e) => e.stopPropagation()} className="forge-modal-mobile" style={{ background: "#1a1a1e", borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "460px", margin: "0 16px 40px", border: "1px solid rgba(255,255,255,0.1)" }}>
         <h3 style={{ margin: "0 0 20px", fontSize: "18px", color: "#f0f0f0", fontWeight: "700" }}>New Project</h3>
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name"
           style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f0f0f0", fontSize: "16px", padding: "12px 14px", outline: "none", marginBottom: "12px", boxSizing: "border-box" }} />
@@ -888,6 +909,64 @@ function TodayView({ projects, onToggleTask, onEditTask, onFlagTask, onSelectPro
   );
 }
 
+// ─── Mobile Bottom Bar ───
+function MobileBottomBar({ view, setView, todayCount, onNewProject }) {
+  const tabs = [
+    { id: "pipeline", icon: "🔀", label: "Pipeline" },
+    { id: "list", icon: "📋", label: "List" },
+    { id: "tasks", icon: "✓", label: "Tasks" },
+    { id: "today", icon: "☀️", label: todayCount > 0 ? `Today (${todayCount})` : "Today" },
+  ];
+  return (
+    <>
+      {/* FAB for new project */}
+      <button onClick={onNewProject}
+        style={{ position: "fixed", bottom: "76px", right: "16px", zIndex: 999, width: "56px", height: "56px", borderRadius: "50%", background: "#f59e0b", border: "none", color: "#000", fontSize: "28px", fontWeight: "700", cursor: "pointer", boxShadow: "0 4px 16px rgba(245,158,11,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        +
+      </button>
+      {/* Bottom tab bar */}
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 998, background: "#1a1a1e", borderTop: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-around", padding: "8px 0 max(8px, env(safe-area-inset-bottom))" }}>
+        {tabs.map((tab) => (
+          <button key={tab.id} onClick={() => setView(tab.id)}
+            style={{ background: "none", border: "none", color: view === tab.id ? "#f59e0b" : "#666", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", padding: "4px 8px", fontSize: "10px", fontWeight: view === tab.id ? "600" : "400", minWidth: "60px" }}>
+            <span style={{ fontSize: "18px" }}>{tab.icon}</span>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ─── Mobile Pipeline View ───
+function MobilePipelineView({ projects, onSelect }) {
+  const [selectedStage, setSelectedStage] = useState("building");
+  const stageProjects = projects.filter((p) => p.stage === selectedStage);
+
+  return (
+    <div>
+      {/* Stage selector strip */}
+      <div style={{ display: "flex", gap: "6px", overflowX: "auto", paddingBottom: "12px", marginBottom: "12px", WebkitOverflowScrolling: "touch" }}>
+        {STAGES.map((stage) => {
+          const count = projects.filter((p) => p.stage === stage.id).length;
+          return (
+            <button key={stage.id} onClick={() => setSelectedStage(stage.id)}
+              style={{ background: selectedStage === stage.id ? `${stage.color}22` : "rgba(255,255,255,0.04)", border: selectedStage === stage.id ? `1px solid ${stage.color}55` : "1px solid rgba(255,255,255,0.06)", borderRadius: "20px", color: selectedStage === stage.id ? stage.color : "#888", padding: "8px 14px", cursor: "pointer", fontSize: "12px", fontWeight: selectedStage === stage.id ? "600" : "400", whiteSpace: "nowrap", flexShrink: 0, transition: "all 0.15s" }}>
+              {stage.emoji} {stage.label} {count > 0 && <span style={{ opacity: 0.7 }}>({count})</span>}
+            </button>
+          );
+        })}
+      </div>
+      {/* Projects for selected stage */}
+      {stageProjects.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#555", fontSize: "13px" }}>No projects in {STAGES.find((s) => s.id === selectedStage)?.label}</div>
+      ) : (
+        stageProjects.map((p) => <ProjectCard key={p.id} project={p} onSelect={onSelect} isDragging={false} />)
+      )}
+    </div>
+  );
+}
+
 // ─── Sync Status ───
 function SyncStatus({ status }) {
   const c = { synced: "#10b981", saving: "#f59e0b", error: "#ef4444", loading: "#3b82f6" };
@@ -911,6 +990,7 @@ export default function Forge() {
   const [draggingId, setDraggingId] = useState(null);
   const [view, setView] = useState("pipeline");
   const [syncStatus, setSyncStatus] = useState("loading");
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     supabase.auth.onAuthStateChange((event, session) => {
@@ -1014,49 +1094,63 @@ export default function Forge() {
 
   if (!user) return <LoginScreen />;
 
+  const todayCount = getTodayCount(projects);
+
   return (
     <div style={{ background: "#111114", minHeight: "100vh", color: "#e8e8e8", fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif" }}>
       <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+      <style>{MOBILE_STYLES}</style>
 
-      <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <span style={{ fontSize: "28px" }}>🔥</span>
+      {/* ── Header ── */}
+      <div style={{ padding: isMobile ? "14px 16px" : "20px 24px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? "8px" : "12px" }}>
+          <span style={{ fontSize: isMobile ? "22px" : "28px" }}>🔥</span>
           <div>
-            <h1 style={{ margin: 0, fontSize: "22px", fontWeight: "700", fontFamily: "'Space Grotesk', sans-serif", color: "#f59e0b", letterSpacing: "-0.5px" }}>THE FORGE</h1>
-            <span style={{ fontSize: "11px", color: "#555", letterSpacing: "2px", textTransform: "uppercase" }}>idea → execution</span>
+            <h1 style={{ margin: 0, fontSize: isMobile ? "18px" : "22px", fontWeight: "700", fontFamily: "'Space Grotesk', sans-serif", color: "#f59e0b", letterSpacing: "-0.5px" }}>THE FORGE</h1>
+            {!isMobile && <span style={{ fontSize: "11px", color: "#555", letterSpacing: "2px", textTransform: "uppercase" }}>idea → execution</span>}
           </div>
         </div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
           <SyncStatus status={syncStatus} />
-          <div style={{ display: "flex", background: "rgba(255,255,255,0.06)", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
-            {[
-              { id: "pipeline", label: "Pipeline", icon: "🔀" },
-              { id: "list", label: "List", icon: "📋" },
-              { id: "tasks", label: "Tasks", icon: "✓" },
-              { id: "today", label: `Today${getTodayCount(projects) > 0 ? ` (${getTodayCount(projects)})` : ""}`, icon: "☀️" },
-            ].map((tab) => (
-              <button key={tab.id} onClick={() => setView(tab.id)}
-                style={{ background: view === tab.id ? "rgba(255,255,255,0.1)" : "transparent", border: "none", color: view === tab.id ? "#f0f0f0" : "#777", padding: "8px 14px", cursor: "pointer", fontSize: "13px", fontWeight: view === tab.id ? "600" : "400", transition: "all 0.15s ease", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
-                {tab.icon} {tab.label}
-              </button>
-            ))}
-          </div>
-          <button onClick={() => setShowNewForm(true)}
-            style={{ background: "#f59e0b", border: "none", borderRadius: "8px", color: "#000", padding: "8px 18px", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}>+ New Project</button>
+          {/* Desktop: full tab bar + buttons */}
+          {!isMobile && (
+            <>
+              <div style={{ display: "flex", background: "rgba(255,255,255,0.06)", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden" }}>
+                {[
+                  { id: "pipeline", label: "Pipeline", icon: "🔀" },
+                  { id: "list", label: "List", icon: "📋" },
+                  { id: "tasks", label: "Tasks", icon: "✓" },
+                  { id: "today", label: `Today${todayCount > 0 ? ` (${todayCount})` : ""}`, icon: "☀️" },
+                ].map((tab) => (
+                  <button key={tab.id} onClick={() => setView(tab.id)}
+                    style={{ background: view === tab.id ? "rgba(255,255,255,0.1)" : "transparent", border: "none", color: view === tab.id ? "#f0f0f0" : "#777", padding: "8px 14px", cursor: "pointer", fontSize: "13px", fontWeight: view === tab.id ? "600" : "400", transition: "all 0.15s ease", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+                    {tab.icon} {tab.label}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setShowNewForm(true)}
+                style={{ background: "#f59e0b", border: "none", borderRadius: "8px", color: "#000", padding: "8px 18px", cursor: "pointer", fontSize: "14px", fontWeight: "700" }}>+ New Project</button>
+            </>
+          )}
           <button onClick={() => supabase.auth.signOut()}
             style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#888", padding: "8px 14px", cursor: "pointer", fontSize: "12px" }}
-            title={user.email}>Sign out</button>
+            title={user.email}>{isMobile ? "↪" : "Sign out"}</button>
         </div>
       </div>
 
-      <div style={{ padding: "20px 24px" }}>
+      {/* ── Main Content ── */}
+      <div style={{ padding: isMobile ? "16px" : "20px 24px", paddingBottom: isMobile ? "140px" : "20px" }}>
         <FocusStats projects={projects} />
         <NudgeBanner projects={projects} />
 
         {view === "pipeline" ? (
-          <div style={{ display: "flex", gap: "14px", overflowX: "auto", paddingBottom: "20px" }}>
-            {STAGES.map((stage) => <PipelineColumn key={stage.id} stage={stage} projects={projects.filter((p) => p.stage === stage.id)} onSelect={setSelectedProject} onDrop={handleDrop} draggingId={draggingId} />)}
-          </div>
+          isMobile ? (
+            <MobilePipelineView projects={projects} onSelect={setSelectedProject} />
+          ) : (
+            <div style={{ display: "flex", gap: "14px", overflowX: "auto", paddingBottom: "20px" }}>
+              {STAGES.map((stage) => <PipelineColumn key={stage.id} stage={stage} projects={projects.filter((p) => p.stage === stage.id)} onSelect={setSelectedProject} onDrop={handleDrop} draggingId={draggingId} />)}
+            </div>
+          )
         ) : view === "tasks" ? (
           <GlobalTaskView projects={projects} onToggleTask={handleToggleTask} onEditTask={handleEditTask} onFlagTask={handleFlagTask} onSelectProject={setSelectedProject} />
         ) : view === "today" ? (
@@ -1097,6 +1191,10 @@ export default function Forge() {
         )}
       </div>
 
+      {/* ── Mobile Bottom Bar ── */}
+      {isMobile && <MobileBottomBar view={view} setView={setView} todayCount={todayCount} onNewProject={() => setShowNewForm(true)} />}
+
+      {/* ── Modals ── */}
       {selectedProject && <ProjectDetail project={projects.find((p) => p.id === selectedProject.id) || selectedProject} onClose={() => setSelectedProject(null)} onUpdate={handleUpdate} onDelete={handleDelete} />}
       {showNewForm && <NewProjectForm onAdd={handleAdd} onCancel={() => setShowNewForm(false)} />}
     </div>
