@@ -146,6 +146,7 @@ const STAGES = [
   { id: "planned", label: "Planned", emoji: "📐", description: "Ready to build", color: "#3b82f6" },
   { id: "building", label: "Building", emoji: "🔨", description: "Actively working", color: "#10b981" },
   { id: "paused", label: "Paused", emoji: "⏸️", description: "On the shelf", color: "#6b7280" },
+  { id: "ongoing", label: "Ongoing", emoji: "🔄", description: "Shipped but living", color: "#a855f7" },
   { id: "done", label: "Done", emoji: "✅", description: "Shipped it", color: "#06b6d4" },
 ];
 
@@ -580,7 +581,7 @@ function NewProjectForm({ onAdd, onCancel }) {
 
         <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Starting Stage</label>
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "20px" }}>
-          {STAGES.filter((s) => s.id !== "done").map((s) => (
+          {STAGES.filter((s) => s.id !== "done" && s.id !== "ongoing").map((s) => (
             <button key={s.id} onClick={() => setStage(s.id)}
               style={{ background: stage === s.id ? `${s.color}33` : "rgba(255,255,255,0.04)", border: stage === s.id ? `1px solid ${s.color}` : "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: stage === s.id ? s.color : "#888", fontSize: "12px", padding: "6px 12px", cursor: "pointer", fontWeight: stage === s.id ? "600" : "400" }}>
               {s.emoji} {s.label}
@@ -655,7 +656,7 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onFlagTask, onSele
   const sortedByProject = Object.entries(groupedByProject).sort(([, a], [, b]) => {
     const ai = stageOrder.indexOf(a.stage), bi = stageOrder.indexOf(b.stage);
     // Building (3) first, then planned (2), shaping (1), spark (0), paused (4), done (5)
-    const priority = [4, 3, 2, 1, 5, 6]; // spark=4, shaping=3, planned=2, building=1, paused=5, done=6
+    const priority = [5, 4, 3, 1, 6, 2, 7]; // spark=5, shaping=4, planned=3, building=1, paused=6, ongoing=2, done=7
     return (priority[ai] || 9) - (priority[bi] || 9);
   });
 
@@ -667,7 +668,7 @@ function GlobalTaskView({ projects, onToggleTask, onEditTask, onFlagTask, onSele
     groupedByMilestone[key].tasks.push(t);
   });
   const sortedByMilestone = Object.entries(groupedByMilestone).sort(([, a], [, b]) => {
-    const priority = [4, 3, 2, 1, 5, 6];
+    const priority = [5, 4, 3, 1, 6, 2, 7];
     const ai = stageOrder.indexOf(a.stage), bi = stageOrder.indexOf(b.stage);
     return (priority[ai] || 9) - (priority[bi] || 9);
   });
@@ -824,7 +825,7 @@ function TodayView({ projects, onToggleTask, onEditTask, onFlagTask, onSelectPro
 
   // Group by project, sorted by stage
   const stageOrder = STAGES.map((s) => s.id);
-  const stagePriority = [4, 3, 2, 1, 5, 6];
+  const stagePriority = [5, 4, 3, 1, 6, 2, 7];
   const grouped = {};
   displayTasks.forEach((t) => {
     if (!grouped[t.projectId]) grouped[t.projectId] = { name: t.projectName, stage: t.projectStage, color: t.stageColor, emoji: t.stageEmoji, tasks: [] };
@@ -1101,4 +1102,3 @@ export default function Forge() {
     </div>
   );
 }
-
