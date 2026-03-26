@@ -495,15 +495,23 @@ function NewProjectForm({ onAdd, onCancel }) {
   const [desc, setDesc] = useState("");
   const [tasks, setTasks] = useState([]);
   const [newTask, setNewTask] = useState("");
+  const [milestones, setMilestones] = useState([]);
+  const [newMilestoneName, setNewMilestoneName] = useState("");
+  const [showNewMilestone, setShowNewMilestone] = useState(false);
+  const [milestoneNewTask, setMilestoneNewTask] = useState({});
   const stg = STAGES.find((s) => s.id === stage);
 
   const addTask = () => { if (!newTask.trim()) return; setTasks((prev) => [...prev, { id: generateId(), text: newTask.trim(), done: false, createdAt: Date.now() }]); setNewTask(""); };
   const removeTask = (tid) => setTasks((prev) => prev.filter((t) => t.id !== tid));
-  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks, milestones: [], notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
+  const addMilestone = () => { if (!newMilestoneName.trim()) return; setMilestones((prev) => [...prev, { id: generateId(), name: newMilestoneName.trim(), tasks: [], createdAt: Date.now() }]); setNewMilestoneName(""); setShowNewMilestone(false); };
+  const removeMilestone = (mid) => setMilestones((prev) => prev.filter((m) => m.id !== mid));
+  const addMilestoneTask = (mid) => { const text = (milestoneNewTask[mid] || "").trim(); if (!text) return; const t = { id: generateId(), text, done: false, createdAt: Date.now() }; setMilestones((prev) => prev.map((m) => m.id === mid ? { ...m, tasks: [...m.tasks, t] } : m)); setMilestoneNewTask((prev) => ({ ...prev, [mid]: "" })); };
+  const removeMilestoneTask = (mid, tid) => setMilestones((prev) => prev.map((m) => m.id === mid ? { ...m, tasks: m.tasks.filter((t) => t.id !== tid) } : m));
+  const create = () => { if (name.trim()) onAdd({ id: generateId(), name: name.trim(), stage, description: desc, tasks, milestones, notes: "", createdAt: Date.now(), lastTouchedAt: Date.now() }); };
 
   return (
-    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000, overflowY: "auto", padding: "20px 0" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "460px", margin: "0 16px", border: "1px solid rgba(255,255,255,0.1)" }}>
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", justifyContent: "center", alignItems: "flex-start", zIndex: 1000, overflowY: "auto", padding: "5vh 0" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1e", borderRadius: "16px", padding: "28px", width: "100%", maxWidth: "460px", margin: "0 16px 40px", border: "1px solid rgba(255,255,255,0.1)" }}>
         <h3 style={{ margin: "0 0 20px", fontSize: "18px", color: "#f0f0f0", fontWeight: "700" }}>New Project</h3>
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name"
           style={{ width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "10px", color: "#f0f0f0", fontSize: "16px", padding: "12px 14px", outline: "none", marginBottom: "12px", boxSizing: "border-box" }} />
@@ -528,6 +536,47 @@ function NewProjectForm({ onAdd, onCancel }) {
             style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
           <button onClick={addTask} style={{ background: `${stg.color}33`, border: `1px solid ${stg.color}55`, borderRadius: "8px", color: stg.color, padding: "8px 12px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>Add</button>
         </div>
+
+        {/* Milestones */}
+        <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Milestones (optional)</label>
+        {milestones.map((milestone) => (
+          <div key={milestone.id} style={{ marginBottom: "12px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: "8px", padding: "10px 12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: milestone.tasks.length > 0 ? "8px" : "0" }}>
+              <span style={{ fontWeight: "600", fontSize: "13px", color: "#e0e0e0", flex: 1 }}>{milestone.name}</span>
+              {milestone.tasks.length > 0 && <span style={{ fontSize: "11px", color: "#777" }}>{milestone.tasks.length} tasks</span>}
+              <button onClick={() => removeMilestone(milestone.id)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "14px", padding: "0 4px" }}
+                onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
+            </div>
+            {milestone.tasks.map((task) => (
+              <div key={task.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 0 4px 16px", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
+                <span style={{ width: "14px", height: "14px", minWidth: "14px", borderRadius: "3px", border: `2px solid ${stg.color}44`, display: "inline-block" }} />
+                <span style={{ flex: 1, fontSize: "12px", color: "#bbb" }}>{task.text}</span>
+                <button onClick={() => removeMilestoneTask(milestone.id, task.id)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: "12px", padding: "0 4px" }}
+                  onMouseEnter={(e) => (e.target.style.color = "#ef4444")} onMouseLeave={(e) => (e.target.style.color = "#444")}>×</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: "6px", marginTop: "6px", paddingLeft: "16px" }}>
+              <input value={milestoneNewTask[milestone.id] || ""} onChange={(e) => setMilestoneNewTask((prev) => ({ ...prev, [milestone.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && addMilestoneTask(milestone.id)} placeholder="Add task to milestone…"
+                style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: "6px", color: "#ccc", fontSize: "12px", padding: "6px 10px", outline: "none" }} />
+              <button onClick={() => addMilestoneTask(milestone.id)} style={{ background: `${stg.color}22`, border: `1px solid ${stg.color}44`, borderRadius: "6px", color: stg.color, padding: "6px 10px", fontSize: "11px", fontWeight: "600", cursor: "pointer" }}>Add</button>
+            </div>
+          </div>
+        ))}
+        {showNewMilestone ? (
+          <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+            <input autoFocus value={newMilestoneName} onChange={(e) => setNewMilestoneName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addMilestone(); if (e.key === "Escape") { setShowNewMilestone(false); setNewMilestoneName(""); } }} placeholder="Milestone name…"
+              style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", color: "#ccc", fontSize: "13px", padding: "8px 12px", outline: "none" }} />
+            <button onClick={addMilestone} style={{ background: stg.color, border: "none", borderRadius: "8px", color: "#fff", padding: "8px 12px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>Add</button>
+            <button onClick={() => { setShowNewMilestone(false); setNewMilestoneName(""); }} style={{ background: "rgba(255,255,255,0.06)", border: "none", borderRadius: "8px", color: "#888", padding: "8px 10px", cursor: "pointer", fontSize: "12px" }}>Cancel</button>
+          </div>
+        ) : (
+          <button onClick={() => setShowNewMilestone(true)}
+            style={{ background: "rgba(255,255,255,0.04)", border: "1px dashed rgba(255,255,255,0.12)", borderRadius: "8px", color: "#777", padding: "8px 14px", cursor: "pointer", fontSize: "12px", width: "100%", marginBottom: "16px", transition: "all 0.15s" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; e.currentTarget.style.color = "#bbb"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.color = "#777"; }}>
+            + Add Milestone
+          </button>
+        )}
 
         <label style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", display: "block", marginBottom: "8px" }}>Starting Stage</label>
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "20px" }}>
@@ -1052,3 +1101,4 @@ export default function Forge() {
     </div>
   );
 }
+
